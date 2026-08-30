@@ -36,7 +36,6 @@ from core.cache import SessionCache
 from core.recommender import MusicRecommender
 from models.song import Song
 from services.lastfm_client import LastFmClient
-from services.spotify_client import SpotifyClient
 from services.youtube_client import YouTubeClient, YouTubeQuotaExceededError
 from ui.bubble_grid import render_bubble_grid, render_now_playing
 from ui.map_widget import render_mood_map
@@ -66,11 +65,6 @@ def _get_youtube_client(api_key: str, daily_search_budget: int) -> YouTubeClient
     whoever is using it at the time.)
     """
     return YouTubeClient(api_key, daily_search_budget)
-
-
-@st.cache_resource
-def _get_spotify_client(client_id: str, client_secret: str) -> SpotifyClient:
-    return SpotifyClient(client_id, client_secret)
 
 
 @st.cache_resource
@@ -138,11 +132,11 @@ def main() -> None:
 
     lastfm_client = _get_lastfm_client(settings.lastfm_api_key)
     youtube_client = _get_youtube_client(settings.youtube_api_key, settings.youtube_daily_search_budget)
-    # Spotify is instantiated and ready to use, but not called anywhere in
-    # this MVP's live flow — kept handy for new-release freshness later,
-    # per the project's own scoping decision. The core loop below is
-    # Last.fm (tags + similarity) and YouTube (playback) only.
-    _get_spotify_client(settings.spotify_client_id, settings.spotify_client_secret)
+    # Spotify is intentionally not instantiated here — the core loop is
+    # Last.fm (tags + similarity) and YouTube (playback) only. See
+    # services/spotify_client.py's docstring: it's kept ready for future
+    # new-release freshness work, wired back in here only when that
+    # feature is actually turned on.
 
     recommender = _build_recommender(lastfm_client, settings.bubble_count, settings.nearest_tag_count)
 

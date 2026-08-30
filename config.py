@@ -40,8 +40,15 @@ class Settings:
 
     lastfm_api_key: str
     youtube_api_key: str
-    spotify_client_id: str
-    spotify_client_secret: str
+
+    # Optional: Spotify is not called anywhere in the app right now (see
+    # services/spotify_client.py's docstring — kept handy for future
+    # new-release freshness, not part of the live flow). Left optional so
+    # the app runs with just Last.fm + YouTube keys, since generating a
+    # Spotify Client ID/Secret now requires an active Spotify Premium
+    # subscription on the creating account.
+    spotify_client_id: str | None = None
+    spotify_client_secret: str | None = None
 
     # How many song bubbles are shown at once.
     bubble_count: int = 10
@@ -89,8 +96,8 @@ def load_settings() -> Settings:
     return Settings(
         lastfm_api_key=_require_env("LASTFM_API_KEY"),
         youtube_api_key=_require_env("YOUTUBE_API_KEY"),
-        spotify_client_id=_require_env("SPOTIFY_CLIENT_ID"),
-        spotify_client_secret=_require_env("SPOTIFY_CLIENT_SECRET"),
+        spotify_client_id=os.getenv("SPOTIFY_CLIENT_ID"),
+        spotify_client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
     )
 
 
