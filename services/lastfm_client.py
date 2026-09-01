@@ -138,10 +138,54 @@ class LastFmClient:
         genuine mood-tag coverage to be "matched_by_mood=True", versus
         falling back to genre-only placement for thin/untagged tracks
         (new releases, niche genres) per the app's stated fallback rule.
+        Also used to enrich an artist-scoped catalog (see
+        get_artist_top_tracks) with tags, for apps running with a single
+        artist filter.
+
+        autocorrect=1 lets Last.fm resolve small spelling/naming
+        variations (e.g. a track credited slightly differently than
+        exactly typed) to the closest real match, rather than returning
+        no data for an otherwise-correct near-match.
         """
         payload = self._get(
             "track.gettoptags",
-            {"artist": artist, "track": title},
+            {"artist": artist, "track": title, "autocorrect": "1"},
         )
         raw_tags = payload.get("toptags", {}).get("tag", [])
         return [raw.get("name", "") for raw in raw_tags[:limit] if raw.get("name")]
+
+    def get_artist_top_tracks(self, artist: str, limit: int = 60) -> list[Song]:
+        """
+        Fetch an artist's own top tracks by Last.fm popularity (playcount
+        rank), with no tag or mood filtering applied — this is the raw
+        catalog that core/recommender.py enriches with tags (via
+        get_top_tags, one call per track) and then ranks by tag overlap,
+        when the app is running with a single-artist filter.
+
+        autocorrect=1 means a close variant of the artist's name (e.g.
+        a shorter stage-name credit) still resolves correctly.
+
+        Returned Songs have relevance_score set to their catalog
+        popularity rank as a sane default ordering — recommender.py
+        overwrites this with a tag-overlap score once the catalog is
+        actually being ranked against a resolved map position.
+        """
+        payload = self._get(
+            "artist.gettoptracks",
+            {"artist": artist, "limit": str(limit), "autocorrect": "1"},
+        )
+        raw_tracks = payload.get("toptracks", {}).get("track", [])
+
+        songs: list[Song] = []
+        for raw in raw_tracks:
+            artist_name = raw.get("artist", {}).get("name", artist)
+            songs.append(
+                Song(
+                    title=raw.get("name", "Unknown Title"),
+                    artist=artist_name,
+                    matched_by_mood=False,  # set True later, only if tag overlap is found
+                    relevance_score=float(raw.get("@attr", {}).get("rank", 0) or 0),
+                    sources=["lastfm"],
+                )
+            )
+        return songs

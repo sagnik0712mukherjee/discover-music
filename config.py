@@ -102,47 +102,57 @@ def load_settings() -> Settings:
 
 
 # ---------------------------------------------------------------------------
-# Anchor tag map
+# Mood map — 4-corner bilinear system
 # ---------------------------------------------------------------------------
-# Coordinates are normalized to a 0-100 grid on both axes, matching the
-# canvas size ui/map_widget.py will render. Genre words and mood words are
-# deliberately interleaved rather than split into strict quadrants — the
-# product idea is a single "mash map" a user can drop a circle anywhere on,
-# not two separate genre/mood axes.
+# The 2D canvas is a continuous mood space with 4 axis labels:
+#   Energetic (top) ↔ Calm (bottom)   [y-axis, y=0 is top]
+#   Dark (left)     ↔ Positive (right) [x-axis]
 #
-# This list is intentionally small for the MVP. Extending coverage later
-# (more genres, more moods, regional/world-music terms) means adding an
-# entry here — no other file needs to change.
-GENRE_TAGS: dict[str, tuple[int, int]] = {
-    "rock": (15, 80),
-    "pop": (75, 85),
-    "sufi": (20, 20),
-    "classical": (10, 50),
-    "jazz": (35, 60),
-    "electronic": (85, 60),
-    "folk": (25, 35),
-    "hip hop": (70, 70),
-    "indie": (50, 75),
-    "metal": (10, 90),
-    "qawwali": (15, 15),
-    "ghazal": (25, 25),
+# Each corner maps to a set of Last.fm tags that characterise that mood
+# quadrant. The draggable circle's (x, y) position is decomposed into
+# weights for each corner via bilinear interpolation — see
+# core/mood_map.py for the math.
+#
+# Tags per corner are ordered by priority; the first tag in the list is
+# the strongest signal for that corner.
+MOOD_CORNERS: dict[str, dict] = {
+    "dark_energetic": {
+        "pos": (0, 0),
+        "tags": ["aggressive", "intense", "dark"],
+    },
+    "pos_energetic": {
+        "pos": (100, 0),
+        "tags": ["energetic", "happy", "dance"],
+    },
+    "dark_calm": {
+        "pos": (0, 100),
+        "tags": ["melancholy", "sad", "dark ambient"],
+    },
+    "pos_calm": {
+        "pos": (100, 100),
+        "tags": ["romantic", "calm", "acoustic"],
+    },
 }
 
-MOOD_TAGS: dict[str, tuple[int, int]] = {
-    "dark": (15, 10),
-    "romantic": (40, 15),
-    "happy": (80, 30),
-    "melancholy": (20, 45),
-    "energetic": (85, 80),
-    "calm": (45, 40),
-    "nostalgic": (30, 55),
-    "uplifting": (70, 20),
-    "moody": (12, 35),
-    "dreamy": (55, 30),
-}
+# Minimum corner weight below which that corner's tags are excluded from
+# the query — avoids spamming Last.fm with tags that have negligible
+# influence on the final ranked pool.
+MOOD_WEIGHT_THRESHOLD: float = 0.05
 
-# Combined map, kept for anything that just wants "all anchors" without
-# caring about the genre/mood distinction — e.g. core/mood_map.py's
-# nearest-tag resolution, and ui/map_widget.py's label rendering.
-# GENRE_TAGS and MOOD_TAGS are the source of truth; this is derived.
-ANCHOR_TAGS: dict[str, tuple[int, int]] = {**GENRE_TAGS, **MOOD_TAGS}
+# ---------------------------------------------------------------------------
+# Genre list — for the chip panel beside the mood map
+# ---------------------------------------------------------------------------
+# All genres are selected by default. User can deselect to narrow results.
+# Genre tags are sent directly to Last.fm's tag.getTopTracks endpoint and
+# are blended with the mood-tag candidates in core/recommender.py.
+GENRES: list[str] = [
+    "pop", "rock", "hip-hop", "jazz", "classical", "electronic",
+    "r&b", "metal", "indie", "folk", "reggae", "blues", "soul",
+    "punk", "country", "latin", "world", "ambient", "k-pop",
+    "alternative", "funk", "house", "lo-fi", "afrobeats",
+]
+
+# ---------------------------------------------------------------------------
+# Artist filter (disabled — open cross-artist discovery)
+# ---------------------------------------------------------------------------
+ARTIST_FILTER: str | None = None

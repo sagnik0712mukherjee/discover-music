@@ -1,74 +1,97 @@
 """
 ui/map_widget.py
 
-Renders the draggable circle on the genre/mood map and returns the
-circle's dropped position, normalized to the same 0-100 grid that
-config.ANCHOR_TAGS coordinates use, so it can be handed straight to
-core.mood_map.resolve_position_to_tags().
+Renders the 2-axis mood map with a draggable circle and returns the
+circle's dropped position, normalized to the 0-100 grid:
+    x=0 → Dark,       x=100 → Positive
+    y=0 → Energetic,  y=100 → Calm   (y=0 is the top of the canvas)
 
-This is the only file in the app that depends on a third-party UI
-component (streamlit-drawable-canvas) rather than plain Streamlit
-widgets — native Streamlit has no click-and-drag primitive, and the
-project's decision was real drag from day one over a click-to-place
-substitute. No JavaScript is hand-written anywhere in this app: the
-component's JS lives inside the pip package, not in this codebase.
+The map shows only 4 axis labels — no genre labels. Genres live in
+the separate chip panel (ui/genre_panel.py).
 
-The tag labels themselves are drawn onto a plain background image with
-Pillow (no external font files needed — PIL's default font is used, so
-there's nothing extra to bundle for deployment).
+Each quadrant is tinted with a very faint color to give an ambient
+hint of the mood zone the circle is in, without cluttering the space.
 """
 
 from io import BytesIO
 
 import streamlit as st
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 from streamlit_drawable_canvas import st_canvas
 
-CANVAS_SIZE = 520
-CIRCLE_RADIUS = 18
-CIRCLE_FILL_COLOR = "rgba(255, 99, 71, 0.75)"
-CIRCLE_STROKE_COLOR = "#8B0000"
-LABEL_COLOR = "#2b2b2b"
+CANVAS_SIZE = 480
+CIRCLE_RADIUS = 16
+CIRCLE_FILL_COLOR = "rgba(99, 102, 241, 0.80)"   # indigo, semi-transparent
+CIRCLE_STROKE_COLOR = "#4338CA"
 
 _CANVAS_KEY = "mood_map_canvas"
 
+# Quadrant tints (RGBA) — very faint, just enough to signal mood zones.
+# Order: top-left (dark+energetic), top-right (positive+energetic),
+#        bottom-left (dark+calm), bottom-right (positive+calm)
+_QUADRANT_COLORS = [
+    (180, 40,  40,  18),   # dark+energetic → faint red
+    (255, 200,  40,  18),  # positive+energetic → faint yellow
+    (60,  60, 160,  18),   # dark+calm → faint blue
+    (40, 160,  80,  18),   # positive+calm → faint green
+]
 
-def _build_background_image(anchor_tags: dict[str, tuple[int, int]]) -> Image.Image:
+# Axis label text and their anchor positions on the canvas
+_AXIS_LABELS = [
+    ("Energetic", (CANVAS_SIZE // 2, 14),  "mt"),   # top center
+    ("Calm",      (CANVAS_SIZE // 2, CANVAS_SIZE - 14), "mb"),  # bottom center
+    ("Dark",      (18, CANVAS_SIZE // 2),  "lm"),   # left center
+    ("Positive",  (CANVAS_SIZE - 18, CANVAS_SIZE // 2), "rm"),  # right center
+]
+
+
+def _build_background_image() -> Image.Image:
     """
-    Draw every anchor tag's label onto a plain CANVAS_SIZE x CANVAS_SIZE
-    image, positioned at its (x, y) coordinate scaled from the 0-100
-    grid in config.py up to actual canvas pixels.
-
-    This image becomes the canvas's background_image — the draggable
-    circle then sits visually on top of it, letting the user drop it
-    near whichever label(s) fit what they're after.
+    Render the mood map background:
+      - Light grey base
+      - 4 faint quadrant tints
+      - Thin crosshair lines
+      - 4 axis labels (bold, positioned at edges)
     """
-    image = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), color="white")
-    draw = ImageDraw.Draw(image)
+    img = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), color=(248, 248, 252))
+    draw = ImageDraw.Draw(img, "RGBA")
 
-    for tag, (grid_x, grid_y) in anchor_tags.items():
-        pixel_x = (grid_x / 100) * CANVAS_SIZE
-        pixel_y = (grid_y / 100) * CANVAS_SIZE
-        # anchor="mm" centers the text horizontally and vertically on
-        # the point, so the label sits directly on its coordinate
-        # rather than growing off to one side of it.
-        draw.text((pixel_x, pixel_y), tag, fill=LABEL_COLOR, anchor="mm")
+    cx = CANVAS_SIZE // 2
+    cy = CANVAS_SIZE // 2
 
-    return image
+    # Quadrant tints
+    tint_rects = [
+        (0,  0,  cx, cy, _QUADRANT_COLORS[0]),   # top-left
+        (cx, 0,  CANVAS_SIZE, cy, _QUADRANT_COLORS[1]),   # top-right
+        (0,  cy, cx, CANVAS_SIZE, _QUADRANT_COLORS[2]),   # bottom-left
+        (cx, cy, CANVAS_SIZE, CANVAS_SIZE, _QUADRANT_COLORS[3]),  # bottom-right
+    ]
+    for x0, y0, x1, y1, color in tint_rects:
+        draw.rectangle([x0, y0, x1, y1], fill=color)
+
+    # Crosshair lines (light grey)
+    line_color = (200, 200, 210, 200)
+    draw.line([(cx, 0), (cx, CANVAS_SIZE)], fill=line_color, width=1)
+    draw.line([(0, cy), (CANVAS_SIZE, cy)], fill=line_color, width=1)
+
+    # Outer border
+    draw.rectangle([0, 0, CANVAS_SIZE - 1, CANVAS_SIZE - 1],
+                   outline=(180, 180, 195), width=1)
+
+    # Axis labels — use PIL default font (no external font files needed)
+    label_color = (60, 60, 80)
+    for text, (px, py), anchor in _AXIS_LABELS:
+        draw.text((px, py), text, fill=label_color, anchor=anchor)
+
+    return img
 
 
 def _build_initial_circle_state() -> dict:
     """
-    Build the fabric.js-format initial drawing state streamlit-drawable-canvas
-    expects: one circle, centered on the canvas, with originX/originY set
-    to "center" so its "left"/"top" fields directly represent the
-    circle's center point (rather than a bounding-box corner) — this
-    keeps the pixel-to-grid conversion in render_mood_map() simple, with
-    no radius offset math needed.
-
-    hasControls is False so the user can move the circle but not resize
-    it — resizing would break the fixed CIRCLE_RADIUS assumption used
-    when re-rendering on every rerun.
+    Fabric.js initial state: one circle centered on the canvas.
+    hasControls=False prevents resizing; only dragging is allowed.
+    originX/Y='center' means left/top directly represent the circle
+    center — no radius-offset math needed when reading back the position.
     """
     return {
         "version": "4.4.0",
@@ -90,18 +113,15 @@ def _build_initial_circle_state() -> dict:
     }
 
 
-def render_mood_map(anchor_tags: dict[str, tuple[int, int]]) -> tuple[float, float] | None:
+def render_mood_map() -> tuple[float, float] | None:
     """
-    Render the labeled map with a draggable circle and return the
-    circle's current position as (x, y) on the same 0-100 grid as
-    config.ANCHOR_TAGS.
+    Render the labeled 2-axis mood map and return the circle's current
+    position as (x, y) on the 0-100 grid.
 
-    Returns None on the very first render before streamlit-drawable-canvas
-    has produced any json_data yet — app.py should treat None as "no
-    position chosen so far" and skip the recommendation call rather than
-    resolving a nonsense default position.
+    Returns None on the very first render before the canvas has produced
+    any json_data — app.py treats None as 'no position chosen yet'.
     """
-    background_image = _build_background_image(anchor_tags)
+    background_image = _build_background_image()
 
     canvas_result = st_canvas(
         fill_color=CIRCLE_FILL_COLOR,
@@ -110,8 +130,7 @@ def render_mood_map(anchor_tags: dict[str, tuple[int, int]]) -> tuple[float, flo
         background_image=background_image,
         height=CANVAS_SIZE,
         width=CANVAS_SIZE,
-        drawing_mode="transform",  # lets the user move the existing circle;
-        # does not let them draw new shapes.
+        drawing_mode="transform",
         initial_drawing=_build_initial_circle_state(),
         update_streamlit=True,
         key=_CANVAS_KEY,
@@ -131,9 +150,7 @@ def render_mood_map(anchor_tags: dict[str, tuple[int, int]]) -> tuple[float, flo
     grid_x = (pixel_x / CANVAS_SIZE) * 100
     grid_y = (pixel_y / CANVAS_SIZE) * 100
 
-    # Clamp in case a drag lands right at/past the canvas edge — keeps
-    # the position sane for core.mood_map's distance calculations rather
-    # than letting it drift outside the 0-100 grid the anchors live on.
+    # Clamp to 0-100 in case of edge drags
     grid_x = max(0.0, min(100.0, grid_x))
     grid_y = max(0.0, min(100.0, grid_y))
 

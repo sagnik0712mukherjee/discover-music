@@ -2,31 +2,29 @@
 app.py
 
 Streamlit entrypoint. Wires together:
-    config          -> API keys, anchor tag map, tunables
-    services/*       -> Last.fm, YouTube, Spotify clients
-    core/cache        -> per-session memoization
-    core/recommender  -> position -> Song list, and song -> similar Song list
-    ui/*             -> the draggable map and the bubble grid / now-playing card
+    config          -> MOOD_CORNERS, GENRES, settings
+    services/*      -> Last.fm, YouTube clients
+    core/cache      -> per-session memoization
+    core/recommender -> (position + genres) -> Song list, song -> similar Song list
+    ui/map_widget   -> 2-axis mood map (Dark/Positive × Energetic/Calm)
+    ui/genre_panel  -> oval genre chip selector
+    ui/bubble_grid  -> song bubbles + now-playing card
 
-Two Streamlit-specific behaviors are handled deliberately here, not
-incidentally:
+Layout:
+    [ mood map (left) | genre panel (right) ]
+    [ song bubbles — full width             ]
 
-1. Streamlit reruns this entire script top-to-bottom on every interaction
-   (dragging the circle, clicking PLAY — anything). Naively recomputing
-   the recommendation on every rerun would re-fire Last.fm calls on
-   reruns that have nothing to do with the map (e.g. a PLAY click).
-   `_position_changed()` guards against that: the bubble grid is only
-   recomputed from the map position when the position has genuinely
-   moved since the last time it was used.
+Two Streamlit-specific behaviors are handled deliberately:
 
-2. When PLAY is clicked, that click is detected inside
-   ui.bubble_grid.render_bubble_grid() *during* the same rerun that also
-   drew the (still-old) bubble grid to the page. Session state is
-   updated after that render call, then st.rerun() is called explicitly
-   to force one more clean rerun — that second pass is what actually
-   draws the new "now playing" card and the new similar-track bubbles.
-   Skipping the explicit rerun would leave the old bubbles on screen
-   until some unrelated interaction happened to trigger the next render.
+1. Rerun guard: a new recommendation is fired only when the map position
+   changes meaningfully (_position_changed) OR when the genre selection
+   changes. Genre-only changes don't need the position epsilon guard
+   since chip clicks are discrete events, not continuous slider values.
+
+2. PLAY click → st.rerun(): the click is detected in render_bubble_grid()
+   during the same rerun that drew the old bubbles. Session state is
+   updated, then st.rerun() forces a clean second pass to render the
+   now-playing card and new similar-track bubbles.
 """
 
 import streamlit as st
@@ -38,11 +36,11 @@ from models.song import Song
 from services.lastfm_client import LastFmClient
 from services.youtube_client import YouTubeClient, YouTubeQuotaExceededError
 from ui.bubble_grid import render_bubble_grid, render_now_playing
+from ui.genre_panel import render_genre_panel
 from ui.map_widget import render_mood_map
 
-# How far (on the 0-100 grid) the circle must move before it's treated as
-# a genuine new drag rather than an incidental value from an unrelated
-# rerun (e.g. re-rendering the map while processing a PLAY click).
+# Minimum position delta to treat as a genuine new drag (not a
+# re-render artifact from a PLAY click or genre toggle).
 _POSITION_EPSILON = 1.0
 
 
@@ -54,40 +52,35 @@ def _get_lastfm_client(api_key: str) -> LastFmClient:
 @st.cache_resource
 def _get_youtube_client(api_key: str, daily_search_budget: int) -> YouTubeClient:
     """
-    Cached as a single shared instance for the whole deployed app process
-    (st.cache_resource is process-wide, not per browser session) — and
-    that's actually the technically correct scope here, not a shortcut.
-    YouTube's real quota is tied to the API key/project, not to any one
-    visitor's session, so every user of this deployed app is genuinely
-    drawing from the same quota bucket. (services/youtube_client.py's own
-    docstring describes the budget loosely as "per session" — this is the
-    more precise framing: per deployed app process, shared across
-    whoever is using it at the time.)
+    Process-wide singleton — YouTube quota is per API key, not per
+    browser session, so sharing this instance across all visitors is
+    the correct scope (not a shortcut).
     """
     return YouTubeClient(api_key, daily_search_budget)
 
 
 @st.cache_resource
-def _build_recommender(_lastfm_client: LastFmClient, bubble_count: int, nearest_tag_count: int) -> MusicRecommender:
-    # Leading underscore on _lastfm_client tells Streamlit not to try
-    # hashing that argument for cache-key purposes (it's an object, not
-    # a plain value) — standard st.cache_resource convention.
+def _build_recommender(
+    _lastfm_client: LastFmClient,
+    bubble_count: int,
+) -> MusicRecommender:
+    # Leading underscore prevents Streamlit from trying to hash the
+    # client object for cache-key purposes.
     return MusicRecommender(
         lastfm_client=_lastfm_client,
-        anchor_tags=config.ANCHOR_TAGS,
-        genre_tags=config.GENRE_TAGS,
+        mood_corners=config.MOOD_CORNERS,
+        mood_weight_threshold=config.MOOD_WEIGHT_THRESHOLD,
         bubble_count=bubble_count,
-        nearest_tag_count=nearest_tag_count,
     )
 
 
-def _position_changed(new_position: tuple[float, float], last_position: tuple[float, float] | None) -> bool:
-    if last_position is None:
+def _position_changed(
+    new: tuple[float, float],
+    old: tuple[float, float] | None,
+) -> bool:
+    if old is None:
         return True
-    return (
-        abs(new_position[0] - last_position[0]) > _POSITION_EPSILON
-        or abs(new_position[1] - last_position[1]) > _POSITION_EPSILON
-    )
+    return abs(new[0] - old[0]) > _POSITION_EPSILON or abs(new[1] - old[1]) > _POSITION_EPSILON
 
 
 def _handle_play(
@@ -97,10 +90,9 @@ def _handle_play(
     cache: SessionCache,
 ) -> None:
     """
-    Resolve everything a PLAY click needs — a video ID (cache first, then
-    a live YouTube search) and the similar-track replacement bubbles
-    (cache first, then a live Last.fm call) — and write it all into
-    session state for the rerun that follows this call.
+    Resolve everything a PLAY click needs — video ID (cache → YouTube)
+    and similar-track replacements (cache → Last.fm) — then write into
+    session state for the rerun that follows.
     """
     video_id = cache.get_video_id(song)
     if video_id is None:
@@ -126,39 +118,61 @@ def _handle_play(
 def main() -> None:
     st.set_page_config(page_title="Music Discovery", layout="wide")
     st.title("🎵 Music Discovery")
-    st.caption("Drag the circle onto the map to find songs that match that spot.")
+    st.caption("Set the mood, pick your genres, and discover music that fits right now.")
 
     settings = config.load_settings()
 
     lastfm_client = _get_lastfm_client(settings.lastfm_api_key)
-    youtube_client = _get_youtube_client(settings.youtube_api_key, settings.youtube_daily_search_budget)
-    # Spotify is intentionally not instantiated here — the core loop is
-    # Last.fm (tags + similarity) and YouTube (playback) only. See
-    # services/spotify_client.py's docstring: it's kept ready for future
-    # new-release freshness work, wired back in here only when that
-    # feature is actually turned on.
+    youtube_client = _get_youtube_client(
+        settings.youtube_api_key, settings.youtube_daily_search_budget
+    )
+    recommender = _build_recommender(lastfm_client, settings.bubble_count)
 
-    recommender = _build_recommender(lastfm_client, settings.bubble_count, settings.nearest_tag_count)
-
+    # Session state defaults
     if "cache" not in st.session_state:
         st.session_state["cache"] = SessionCache()
     cache: SessionCache = st.session_state["cache"]
 
     st.session_state.setdefault("current_bubbles", [])
     st.session_state.setdefault("last_position", None)
+    st.session_state.setdefault("last_genres", None)
     st.session_state.setdefault("now_playing", None)
     st.session_state.setdefault("now_playing_embed_url", None)
 
-    position = render_mood_map(config.ANCHOR_TAGS)
+    # ── Two-column input panel ──────────────────────────────────────────
+    map_col, genre_col = st.columns([3, 2], gap="large")
 
-    if position is not None and _position_changed(position, st.session_state["last_position"]):
-        st.session_state["current_bubbles"] = recommender.get_songs_for_position(*position)
-        st.session_state["last_position"] = position
-        st.session_state["now_playing"] = None
-        st.session_state["now_playing_embed_url"] = None
+    with map_col:
+        position = render_mood_map()
 
+    with genre_col:
+        selected_genres = render_genre_panel(config.GENRES)
+
+    # ── Rerun guard: only re-query when inputs genuinely change ─────────
+    position_changed = position is not None and _position_changed(
+        position, st.session_state["last_position"]
+    )
+    genres_changed = selected_genres != st.session_state["last_genres"]
+
+    if position_changed or genres_changed:
+        effective_position = position or st.session_state.get("last_position") or (50.0, 50.0)
+        st.session_state["current_bubbles"] = recommender.get_songs_for_position(
+            *effective_position,
+            selected_genres=selected_genres,
+        )
+        if position_changed:
+            st.session_state["last_position"] = position
+            # Clear now-playing when the user drags to a new mood zone
+            st.session_state["now_playing"] = None
+            st.session_state["now_playing_embed_url"] = None
+        st.session_state["last_genres"] = selected_genres
+
+    # ── Results ─────────────────────────────────────────────────────────
     if st.session_state["now_playing"] is not None:
-        render_now_playing(st.session_state["now_playing"], st.session_state["now_playing_embed_url"])
+        render_now_playing(
+            st.session_state["now_playing"],
+            st.session_state["now_playing_embed_url"],
+        )
 
     clicked_song = render_bubble_grid(st.session_state["current_bubbles"])
 
