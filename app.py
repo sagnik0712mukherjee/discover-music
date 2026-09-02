@@ -148,24 +148,27 @@ def main() -> None:
     with genre_col:
         selected_genres = render_genre_panel(config.GENRES)
 
-    # ── Rerun guard: only re-query when inputs genuinely change ─────────
-    position_changed = position is not None and _position_changed(
-        position, st.session_state["last_position"]
-    )
-    genres_changed = selected_genres != st.session_state["last_genres"]
+    # ── Submit button — search only on explicit click ────────────────
+    st.markdown("<div style='margin-top: 12px;'></div>", unsafe_allow_html=True)
+    btn_col1, btn_col2, btn_col3 = st.columns([2, 2, 2])
+    with btn_col2:
+        surprise = st.button(
+            "🎲 Surprise me!",
+            type="primary",
+            use_container_width=True,
+            key="surprise_btn",
+        )
 
-    if position_changed or genres_changed:
+    if surprise:
         effective_position = position or st.session_state.get("last_position") or (50.0, 50.0)
         st.session_state["current_bubbles"] = recommender.get_songs_for_position(
             *effective_position,
             selected_genres=selected_genres,
         )
-        if position_changed:
-            st.session_state["last_position"] = position
-            # Clear now-playing when the user drags to a new mood zone
-            st.session_state["now_playing"] = None
-            st.session_state["now_playing_embed_url"] = None
+        st.session_state["last_position"] = position
         st.session_state["last_genres"] = selected_genres
+        st.session_state["now_playing"] = None
+        st.session_state["now_playing_embed_url"] = None
 
     # ── Results ─────────────────────────────────────────────────────────
     if st.session_state["now_playing"] is not None:

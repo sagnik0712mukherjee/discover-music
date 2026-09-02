@@ -157,7 +157,7 @@ class MusicRecommender:
         for match in mood_tags:
             per_tag_limit = max(5, round(match.weight * total_mood_slots))
             try:
-                tag_songs = self._lastfm_client.get_tracks_by_tag(match.tag, limit=per_tag_limit)
+                tag_songs = self._lastfm_client.get_tracks_by_tag(match.tag.lower(), limit=per_tag_limit)
             except (LastFmError, Exception):
                 continue
 
@@ -194,7 +194,7 @@ class MusicRecommender:
 
         for genre in genres:
             try:
-                genre_songs = self._lastfm_client.get_tracks_by_tag(genre, limit=per_genre_limit)
+                genre_songs = self._lastfm_client.get_tracks_by_tag(genre.lower(), limit=per_genre_limit)
             except (LastFmError, Exception):
                 continue
 

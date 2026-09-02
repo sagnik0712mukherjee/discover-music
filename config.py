@@ -146,10 +146,10 @@ MOOD_WEIGHT_THRESHOLD: float = 0.05
 # Genre tags are sent directly to Last.fm's tag.getTopTracks endpoint and
 # are blended with the mood-tag candidates in core/recommender.py.
 GENRES: list[str] = [
-    "pop", "rock", "hip-hop", "jazz", "classical", "electronic",
-    "r&b", "metal", "indie", "folk", "reggae", "blues", "soul",
-    "punk", "country", "latin", "world", "ambient", "k-pop",
-    "alternative", "funk", "house", "lo-fi", "afrobeats",
+    "Pop", "Rock", "Hip-Hop", "Jazz", "Classical", "Electronic",
+    "R&B", "Metal", "Indie", "Folk", "Reggae", "Blues", "Soul",
+    "Punk", "Country", "Latin", "World", "Ambient", "K-Pop",
+    "Alternative", "Funk", "House", "Lo-Fi", "Afrobeats",
 ]
 
 # ---------------------------------------------------------------------------

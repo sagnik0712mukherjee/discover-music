@@ -87,7 +87,7 @@ class LastFmClient:
         raw_tracks = payload.get("tracks", {}).get("track", [])
 
         songs: list[Song] = []
-        for raw in raw_tracks:
+        for i, raw in enumerate(raw_tracks):
             artist_name = raw.get("artist", {}).get("name", "Unknown Artist")
             songs.append(
                 Song(
@@ -95,7 +95,11 @@ class LastFmClient:
                     artist=artist_name,
                     tags=[tag],
                     matched_by_mood=True,
-                    relevance_score=float(raw.get("@attr", {}).get("rank", 0) or 0),
+                    # Last.fm returns tracks in popularity order; use inverse
+                    # index so position 0 (most popular) gets score 1.0 and
+                    # later entries get smaller scores — correct for descending
+                    # sort in core/recommender.py.
+                    relevance_score=1.0 / (i + 1),
                     sources=["lastfm"],
                 )
             )
@@ -177,14 +181,14 @@ class LastFmClient:
         raw_tracks = payload.get("toptracks", {}).get("track", [])
 
         songs: list[Song] = []
-        for raw in raw_tracks:
+        for i, raw in enumerate(raw_tracks):
             artist_name = raw.get("artist", {}).get("name", artist)
             songs.append(
                 Song(
                     title=raw.get("name", "Unknown Title"),
                     artist=artist_name,
-                    matched_by_mood=False,  # set True later, only if tag overlap is found
-                    relevance_score=float(raw.get("@attr", {}).get("rank", 0) or 0),
+                    matched_by_mood=False,
+                    relevance_score=1.0 / (i + 1),
                     sources=["lastfm"],
                 )
             )

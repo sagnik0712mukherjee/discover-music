@@ -27,8 +27,6 @@ CIRCLE_STROKE_COLOR = "#4338CA"
 _CANVAS_KEY = "mood_map_canvas"
 
 # Quadrant tints (RGBA) — very faint, just enough to signal mood zones.
-# Order: top-left (dark+energetic), top-right (positive+energetic),
-#        bottom-left (dark+calm), bottom-right (positive+calm)
 _QUADRANT_COLORS = [
     (180, 40,  40,  18),   # dark+energetic → faint red
     (255, 200,  40,  18),  # positive+energetic → faint yellow
@@ -36,13 +34,42 @@ _QUADRANT_COLORS = [
     (40, 160,  80,  18),   # positive+calm → faint green
 ]
 
-# Axis label text and their anchor positions on the canvas
+# Axis label text and anchor positions
 _AXIS_LABELS = [
-    ("Energetic", (CANVAS_SIZE // 2, 14),  "mt"),   # top center
-    ("Calm",      (CANVAS_SIZE // 2, CANVAS_SIZE - 14), "mb"),  # bottom center
-    ("Dark",      (18, CANVAS_SIZE // 2),  "lm"),   # left center
-    ("Positive",  (CANVAS_SIZE - 18, CANVAS_SIZE // 2), "rm"),  # right center
+    ("Energetic", (CANVAS_SIZE // 2, 22),  "mt"),
+    ("Calm",      (CANVAS_SIZE // 2, CANVAS_SIZE - 22), "mb"),
+    ("Dark",      (28, CANVAS_SIZE // 2),  "lm"),
+    ("Positive",  (CANVAS_SIZE - 28, CANVAS_SIZE // 2), "rm"),
 ]
+
+_LABEL_FONT_SIZE = 18
+
+
+def _load_font(size: int) -> ImageFont.ImageFont:
+    """
+    Try to load a clean sans-serif font from common system paths.
+    Falls back to PIL's built-in default if none are found — so the
+    app always renders even on a minimal deployment image.
+    """
+    candidates = [
+        # macOS
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/System/Library/Fonts/SFNSDisplay.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        # Linux / Streamlit Cloud
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    ]
+    for path in candidates:
+        try:
+            return ImageFont.truetype(path, size)
+        except (IOError, OSError):
+            continue
+    # Last resort: PIL built-in (looks basic but never fails)
+    return ImageFont.load_default()
 
 
 def _build_background_image() -> Image.Image:
@@ -51,7 +78,7 @@ def _build_background_image() -> Image.Image:
       - Light grey base
       - 4 faint quadrant tints
       - Thin crosshair lines
-      - 4 axis labels (bold, positioned at edges)
+      - 4 axis labels (larger, system font)
     """
     img = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), color=(248, 248, 252))
     draw = ImageDraw.Draw(img, "RGBA")
@@ -61,15 +88,15 @@ def _build_background_image() -> Image.Image:
 
     # Quadrant tints
     tint_rects = [
-        (0,  0,  cx, cy, _QUADRANT_COLORS[0]),   # top-left
-        (cx, 0,  CANVAS_SIZE, cy, _QUADRANT_COLORS[1]),   # top-right
-        (0,  cy, cx, CANVAS_SIZE, _QUADRANT_COLORS[2]),   # bottom-left
-        (cx, cy, CANVAS_SIZE, CANVAS_SIZE, _QUADRANT_COLORS[3]),  # bottom-right
+        (0,  0,  cx, cy, _QUADRANT_COLORS[0]),
+        (cx, 0,  CANVAS_SIZE, cy, _QUADRANT_COLORS[1]),
+        (0,  cy, cx, CANVAS_SIZE, _QUADRANT_COLORS[2]),
+        (cx, cy, CANVAS_SIZE, CANVAS_SIZE, _QUADRANT_COLORS[3]),
     ]
     for x0, y0, x1, y1, color in tint_rects:
         draw.rectangle([x0, y0, x1, y1], fill=color)
 
-    # Crosshair lines (light grey)
+    # Crosshair lines
     line_color = (200, 200, 210, 200)
     draw.line([(cx, 0), (cx, CANVAS_SIZE)], fill=line_color, width=1)
     draw.line([(0, cy), (CANVAS_SIZE, cy)], fill=line_color, width=1)
@@ -78,10 +105,11 @@ def _build_background_image() -> Image.Image:
     draw.rectangle([0, 0, CANVAS_SIZE - 1, CANVAS_SIZE - 1],
                    outline=(180, 180, 195), width=1)
 
-    # Axis labels — use PIL default font (no external font files needed)
-    label_color = (60, 60, 80)
+    # Axis labels — larger, system font
+    font = _load_font(_LABEL_FONT_SIZE)
+    label_color = (45, 45, 70)
     for text, (px, py), anchor in _AXIS_LABELS:
-        draw.text((px, py), text, fill=label_color, anchor=anchor)
+        draw.text((px, py), text, fill=label_color, anchor=anchor, font=font)
 
     return img
 
