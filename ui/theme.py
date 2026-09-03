@@ -13,30 +13,14 @@ Holds:
 Both are pure st.markdown(..., unsafe_allow_html=True) calls — CSS only,
 no JS.
 
-DESIGN NOTE (fourth revision): the previous CSS selector,
-[data-testid="stVerticalBlockBorderWrapper"], turned out to be wrong —
-confirmed against real Streamlit output (see community reports) that
-this testid wraps EVERY column and container app-wide, bordered or
-not; it is not unique to st.container(border=True). That's why the
-progress slider and its time label ended up boxed too — the selector
-was catching their st.columns() wrappers, not just the two intended
-cards.
-
-Fixed properly this time: ui/bubble_grid.py no longer uses
-border=True at all. Instead, song cards and the now-playing card each
-render an invisible marker div (.bubble-card-marker /
-.now-playing-card-marker) as their first child, and the CSS below
-uses the :has() relational selector, restricted to a shallow
-direct-child chain (wrapper > stVerticalBlock > element-container),
-to style only wrapper divs where the marker sits at that exact depth.
-A plain :has(.marker) with no depth restriction still matches any
-OUTER ancestor that structurally contains the marker much further
-down (since every container/column shares the same generic testid) —
-that's what boxed the entire page in an earlier pass; the '>' chain
-below is what prevents it. Border is black (not white) and the
-wrapper gets real inner padding now, so text doesn't touch the edge.
-:has() has been supported in Safari and Chrome since 2022/2023 — safe
-for this app's target browsers.
+DESIGN NOTE (final): after two failed attempts at scoping a custom
+border color via CSS (one boxed the whole page, the next missed song
+cards specifically — see ui/bubble_grid.py's docstring for the full
+account), this stylesheet no longer tries to style the card border at
+all. That border comes entirely from st.container(border=True) in
+ui/bubble_grid.py, a Python-level prop, not something CSS pattern-
+matching has to guess at — guaranteed correct scope at the cost of a
+custom border color, which is a much safer trade to make.
 
 Also fixed the mismatched red slider: .streamlit/config.toml still had
 primaryColor = "#8B0000" (dark red) left over from the very first
@@ -153,28 +137,19 @@ _GLOBAL_CSS = """
     background-color: rgba(46, 196, 182, 0.78) !important;
 }
 
-/* Song cards and the now-playing card — ONLY wrapper divs where the
-   marker sits at THIS EXACT shallow depth (direct child chain:
-   wrapper > stVerticalBlock > element-container > ... > marker) get
-   this styling. A plain :has(.marker) with no depth restriction also
-   matches any OUTER ancestor that happens to structurally contain the
-   marker many levels further down — which is exactly what boxed the
-   entire page last time, since every container/column shares this
-   same generic testid. The '>' combinators below are what prevent
-   that: an outer ancestor's marker-containing descendant is nested
-   far deeper than 2-3 direct-child hops, so it fails this stricter
-   chain and is correctly left unstyled. */
-[data-testid="stAppViewContainer"] [data-testid="stVerticalBlockBorderWrapper"]:has(
-    > div[data-testid="stVerticalBlock"] > div[data-testid="element-container"] .bubble-card-marker
-),
-[data-testid="stAppViewContainer"] [data-testid="stVerticalBlockBorderWrapper"]:has(
-    > div[data-testid="stVerticalBlock"] > div[data-testid="element-container"] .now-playing-card-marker
-) {
-    background-color: rgba(255, 255, 255, 0.04) !important;
-    border-radius: 14px !important;
-    border: 1.5px solid #000000 !important;
-    padding: 18px 20px !important;
-}
+/* Song cards and the now-playing card get their box entirely from
+   st.container(border=True) in ui/bubble_grid.py — a Python-level
+   prop Streamlit itself renders, not something this stylesheet needs
+   to (or safely can) target. Two earlier attempts at recoloring that
+   border via a CSS selector on Streamlit's generic wrapper testid
+   each leaked onto unintended elements in a different way — see
+   ui/bubble_grid.py's docstring for the full account. Deliberately
+   no CSS rule here at all for that border: correctness of WHICH
+   elements are boxed matters far more than the exact border color,
+   and every attempt to influence that color via CSS also risked
+   redrawing borders elsewhere. Cards render in Streamlit's own
+   default border color/weight for now.
+*/
 
 /* Progress slider polish: bigger, cleaner white text for the 0/max
    endpoint labels and the floating current-value bubble, in the same

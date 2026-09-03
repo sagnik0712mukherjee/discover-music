@@ -24,22 +24,25 @@ page, so by the time the script executes top-to-bottom again,
 session_state already reflects the click. One natural rerun, nothing
 extra, no scroll reset.
 
-WHY A MARKER DIV INSTEAD OF st.container(border=True):
-Song cards and the now-playing card ARE meant to have a visible white
-border (everything else in the app — map, genre panel, buttons — stays
-borderless). But st.container(border=True) can't be scoped to "just
-these two" without the key= parameter, which isn't available on the
-Streamlit version this project is pinned to (<1.37, kept for
-streamlit-drawable-canvas compatibility) — and Streamlit's generic
-container wrapper (data-testid="stVerticalBlockBorderWrapper") turns
-out to wrap EVERY column/container app-wide, bordered or not, so
-targeting it directly via CSS boxes everything, not just cards.
-Fix: each of these two containers gets a plain st.container() (no
-border) with an invisible marker div as its first child
-(.bubble-card-marker / .now-playing-card-marker). ui/theme.py's CSS
-uses the :has() selector to style only wrapper divs that contain that
-specific marker — nothing else in the app has one, so nothing else
-gets boxed, regardless of how many other columns/containers exist.
+WHY st.container(border=True) — NO CUSTOM CSS TARGETING IT (sixth
+revision, final): two prior attempts at scoping a custom border via
+CSS alone each failed differently — one boxed the entire page (a
+:has(marker) selector matches at ANY depth, so far outer ancestors
+that also structurally contain the marker matched too, since every
+column/container shares the same generic testid), the next boxed
+nothing on song cards specifically (a depth-restricted :has() chain
+that worked for the now-playing card didn't hold for cards nested
+inside st.columns(), and this couldn't be fully diagnosed without a
+live browser to inspect the real rendered DOM). Rather than guess a
+third time, this reverts to plain st.container(border=True) with NO
+CSS rule targeting it at all. This guarantees, by construction, that
+ONLY these two exact call sites ever show a box — border=True is a
+Python-level prop read by Streamlit itself, not a CSS pattern that has
+to be reverse-engineered from ambient markup, so it cannot leak onto
+any other element regardless of nesting context. The trade-off:
+the border renders in Streamlit's own default color/weight, not a
+custom black or white — safe to refine later in a separate, narrowly
+scoped pass, once this scoping itself is confirmed solid.
 
 WHY THE IFRAME IS HIDDEN RATHER THAN REMOVED:
 YouTube's embedded player is what's actually licensed/intended for
@@ -90,11 +93,7 @@ def render_bubble_grid(songs: list[Song], on_play: Callable[..., None], *on_play
         columns = st.columns(len(row))
         for column, song in zip(columns, row):
             with column:
-                with st.container():
-                    st.markdown(
-                        '<div class="bubble-card-marker"></div>',
-                        unsafe_allow_html=True,
-                    )
+                with st.container(border=True):
                     st.markdown(f"**{song.title}**")
                     st.caption(song.artist)
                     if not song.matched_by_mood:
@@ -206,11 +205,7 @@ def render_now_playing(
         callback no value automatically — app.py's callback reads it
         back out of st.session_state, see the widget key used below).
     """
-    with st.container():
-        st.markdown(
-            '<div class="now-playing-card-marker"></div>',
-            unsafe_allow_html=True,
-        )
+    with st.container(border=True):
         st.markdown(f"### 🎧 Now playing: {song.display_name()}")
 
         if video_id is None:
