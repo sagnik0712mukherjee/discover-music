@@ -91,18 +91,31 @@ class YouTubeClient:
 
         return items[0].get("id", {}).get("videoId")
 
-    def build_embed_url(self, video_id: str, autoplay: bool = True) -> str:
+    def build_embed_url(
+        self,
+        video_id: str,
+        autoplay: bool = True,
+        start_seconds: float = 0.0,
+    ) -> str:
         """
         Build a YouTube embed URL for the given video ID, suitable for
-        dropping into an <iframe src="..."> in ui/bubble_grid.py via
-        st.components.v1.html or st.video().
+        dropping into a hidden <iframe src="..."> in ui/bubble_grid.py
+        (see change #4 — the app plays audio-only via a visually
+        hidden iframe, controls=0 keeps YouTube's own UI out of it).
 
-        No JavaScript is required — autoplay, controls, and start position
-        are all driven by URL query parameters, which YouTube's embed
-        player reads and handles internally.
+        No JavaScript is required — autoplay, controls, and start
+        position are all driven by URL query parameters, which
+        YouTube's embed player reads and handles internally.
+
+        start_seconds lets a caller resume playback near where it left
+        off (see core/playback.py) or seek forward/back by rebuilding
+        this URL with a new value — YouTube has no way to seek a
+        *running* embed without JS, so a seek is really "recreate the
+        iframe starting from a different second."
         """
         autoplay_flag = "1" if autoplay else "0"
+        start_int = max(0, int(start_seconds))
         return (
             f"https://www.youtube.com/embed/{video_id}"
-            f"?autoplay={autoplay_flag}&rel=0"
+            f"?autoplay={autoplay_flag}&rel=0&controls=0&start={start_int}"
         )

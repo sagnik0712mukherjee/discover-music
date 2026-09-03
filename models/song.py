@@ -45,6 +45,16 @@ class Song:
     # clicks PLAY (see config.Settings.youtube_daily_search_budget).
     video_id: str | None = None
 
+    # Populated lazily, same timing as video_id: None until
+    # services/lastfm_client.py's get_track_duration_seconds() has been
+    # called for this song (also only on PLAY, to avoid a duration
+    # lookup for all 10 bubbles up front). Used by core/playback.py /
+    # app.py to detect "song has finished" for change #6's auto-play.
+    # Stays None if Last.fm has no duration data for the track — the
+    # auto-play check treats an unknown duration as "can't tell, don't
+    # auto-advance" rather than guessing.
+    duration_seconds: float | None = None
+
     # Popularity/relevance signal carried through from whichever source
     # ranked this song (e.g. Last.fm's tag-count or match score). Used by
     # core/recommender.py to order bubbles; not shown directly in the UI.

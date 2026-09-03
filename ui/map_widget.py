@@ -42,25 +42,27 @@ _AXIS_LABELS = [
     ("Positive",  (CANVAS_SIZE - 28, CANVAS_SIZE // 2), "rm"),
 ]
 
-_LABEL_FONT_SIZE = 18
+_LABEL_FONT_SIZE = 26
 
 
 def _load_font(size: int) -> ImageFont.ImageFont:
     """
-    Try to load a clean sans-serif font from common system paths.
-    Falls back to PIL's built-in default if none are found — so the
-    app always renders even on a minimal deployment image.
+    Try to load a clean, BOLD sans-serif font from common system paths
+    (bold variants listed first — request was for the axis labels to
+    read bolder/cleaner). Falls back to PIL's built-in default if none
+    are found, so the app always renders even on a minimal deployment
+    image without these fonts installed.
     """
     candidates = [
-        # macOS
+        # macOS — bold first
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
-        "/System/Library/Fonts/SFNSDisplay.ttf",
         "/Library/Fonts/Arial.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
-        # Linux / Streamlit Cloud
+        # Linux / Streamlit Cloud — bold first
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
     ]
     for path in candidates:
@@ -107,8 +109,10 @@ def _build_background_image() -> Image.Image:
 
     # Axis labels — larger, system font
     font = _load_font(_LABEL_FONT_SIZE)
-    label_color = (45, 45, 70)
+    label_color = (15, 71, 92)       # deep teal — matches the app's gradient family
+    shadow_color = (255, 255, 255, 160)  # soft white shadow, adds a bit of pop/depth
     for text, (px, py), anchor in _AXIS_LABELS:
+        draw.text((px + 1, py + 1), text, fill=shadow_color, anchor=anchor, font=font)
         draw.text((px, py), text, fill=label_color, anchor=anchor, font=font)
 
     return img
@@ -161,6 +165,7 @@ def render_mood_map() -> tuple[float, float] | None:
         drawing_mode="transform",
         initial_drawing=_build_initial_circle_state(),
         update_streamlit=True,
+        display_toolbar=False,
         key=_CANVAS_KEY,
     )
 

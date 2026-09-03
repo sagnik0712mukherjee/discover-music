@@ -193,3 +193,35 @@ class LastFmClient:
                 )
             )
         return songs
+
+    def get_track_duration_seconds(self, artist: str, title: str) -> float | None:
+        """
+        Fetch a track's duration via track.getInfo, for change #6's
+        auto-play (need to know when a song has actually finished, so
+        the next one can start automatically).
+
+        Only called once per song — when the user clicks PLAY on it —
+        and cached from then on (see core/cache.py), same lazy pattern
+        as services/youtube_client.py's video ID resolution.
+
+        Returns None if Last.fm has no duration on file for this track
+        (some entries genuinely have no duration data, returned as
+        "0") — callers should treat None as "can't determine when this
+        song ends" rather than assuming a fallback length.
+
+        autocorrect=1 matches get_top_tags()'s reasoning: resolves
+        small naming variations rather than returning nothing for an
+        otherwise-correct near-match.
+        """
+        payload = self._get(
+            "track.getInfo",
+            {"artist": artist, "track": title, "autocorrect": "1"},
+        )
+        raw_duration_ms = payload.get("track", {}).get("duration")
+        try:
+            duration_ms = int(raw_duration_ms)
+        except (TypeError, ValueError):
+            return None
+        if duration_ms <= 0:
+            return None
+        return duration_ms / 1000.0

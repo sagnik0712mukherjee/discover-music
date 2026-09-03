@@ -35,6 +35,7 @@ class SessionCache:
         self._video_ids: dict[str, str] = {}
         self._tag_tracks: dict[str, list[Song]] = {}
         self._similar_tracks: dict[str, list[Song]] = {}
+        self._durations: dict[str, float] = {}
 
     # -- video ID cache ----------------------------------------------------
 
@@ -45,6 +46,16 @@ class SessionCache:
     def set_video_id(self, song: Song, video_id: str) -> None:
         """Remember a resolved video_id so this song is never re-searched."""
         self._video_ids[song.identity_key()] = video_id
+
+    # -- duration cache (change #6 — auto-play needs to know song length) --
+
+    def get_duration(self, song: Song) -> float | None:
+        """Return a previously fetched duration (seconds) for this song, if any."""
+        return self._durations.get(song.identity_key())
+
+    def set_duration(self, song: Song, duration_seconds: float) -> None:
+        """Remember a song's duration so it's never re-fetched from Last.fm."""
+        self._durations[song.identity_key()] = duration_seconds
 
     # -- tag -> tracks cache -------------------------------------------------
 

@@ -3,3 +3,4 @@ python-dotenv>=1.0
 requests>=2.31
 streamlit-drawable-canvas>=0.9.3
 Pillow>=10.0
+streamlit-autorefresh>=1.0.1
