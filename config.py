@@ -153,6 +153,23 @@ GENRES: list[str] = [
 ]
 
 # ---------------------------------------------------------------------------
-# Artist filter (disabled — open cross-artist discovery)
+# Artist filter
 # ---------------------------------------------------------------------------
-ARTIST_FILTER: str | None = None
+# When set, EVERY result — position-based discovery and "similar songs"
+# alike — is restricted to this one artist's own catalog. See
+# core/recommender.py for how this flips the whole ranking pipeline:
+# instead of querying Last.fm's global tag charts (which would almost
+# never surface a specific artist), it fetches the artist's own top
+# tracks once and ranks THAT catalog by mood/genre tag overlap.
+# Set to None to disable and return to open, cross-artist discovery.
+ARTIST_FILTER: str | None = "Pritam Chakraborty"
+
+# How many of the artist's own top tracks (by Last.fm popularity) to
+# pull into the catalog when ARTIST_FILTER is set. Each one costs an
+# extra get_top_tags call to enrich with tags, so this is a real
+# trade-off between catalog breadth and one-time build latency (see
+# core/recommender.py — the catalog is built once per deployed app
+# process, not per user session, so this cost is paid once, not
+# repeatedly). 50 is a reasonable default; raise it later if the
+# catalog feels too thin for good mood/genre variety.
+ARTIST_CATALOG_SIZE: int = 50

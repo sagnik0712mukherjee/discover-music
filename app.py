@@ -102,6 +102,8 @@ def _get_youtube_client(api_key: str, daily_search_budget: int) -> YouTubeClient
 def _build_recommender(
     _lastfm_client: LastFmClient,
     bubble_count: int,
+    artist_filter: str | None,
+    artist_catalog_size: int,
 ) -> MusicRecommender:
     # Leading underscore prevents Streamlit from trying to hash the
     # client object for cache-key purposes.
@@ -110,6 +112,8 @@ def _build_recommender(
         mood_corners=config.MOOD_CORNERS,
         mood_weight_threshold=config.MOOD_WEIGHT_THRESHOLD,
         bubble_count=bubble_count,
+        artist_filter=artist_filter,
+        artist_catalog_size=artist_catalog_size,
     )
 
 
@@ -329,7 +333,12 @@ def main() -> None:
     youtube_client = _get_youtube_client(
         settings.youtube_api_key, settings.youtube_daily_search_budget
     )
-    recommender = _build_recommender(lastfm_client, settings.bubble_count)
+    recommender = _build_recommender(
+        lastfm_client,
+        settings.bubble_count,
+        config.ARTIST_FILTER,
+        config.ARTIST_CATALOG_SIZE,
+    )
 
     # Session state defaults
     if "cache" not in st.session_state:
