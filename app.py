@@ -323,7 +323,7 @@ def _render_now_playing_section(
 
 
 def main() -> None:
-    st.set_page_config(page_title="Music - Out of the Blue", layout="wide")
+    st.set_page_config(page_title="Pritam's Music, On The Go!", layout="wide")
     inject_global_css()
     render_app_header()
 

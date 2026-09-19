@@ -22,6 +22,8 @@ flips entirely — see _get_artist_catalog and the two
 _get_artist_filtered_* methods below for why and how.
 """
 
+import time
+
 from core.mood_map import TagMatch, resolve_position_to_mood_tags
 from models.song import Song
 from services.lastfm_client import LastFmClient, LastFmError
@@ -40,6 +42,67 @@ _MOOD_SHARE = 0.6
 # tie-breaks among otherwise-equal matches. Deliberately small — tag
 # overlap should dominate the ranking, popularity is just a tiebreaker.
 _ARTIST_POPULARITY_WEIGHT = 0.05
+
+# Pause between each per-track get_top_tags call while building the
+# artist catalog — a defensive guard against Last.fm's rate limiting
+# during this 50-call burst, which would otherwise be silently read
+# as "this track has no tags" by the broad except around that call.
+_ARTIST_TAG_FETCH_DELAY_SECONDS = 0.15
+
+# Real Last.fm folksonomy tags rarely match this app's curated mood-
+# corner words or genre chip labels exactly — a Bollywood track is
+# far more likely to be tagged "love" than "romantic", or "sad song"
+# than "melancholy". Used by _tag_matches() below to widen what counts
+# as a match for the artist-filter ranking path specifically; the
+# open-discovery path (querying Last.fm's global tag charts directly)
+# doesn't need this, since it sends these words AS the query rather
+# than checking for their presence in someone else's tag list.
+_TAG_SYNONYMS: dict[str, list[str]] = {
+    # Mood-corner tags (config.MOOD_CORNERS)
+    "aggressive": ["intense", "powerful", "hard"],
+    "intense": ["aggressive", "powerful", "strong"],
+    "dark": ["moody", "intense", "brooding"],
+    "energetic": ["upbeat", "dance", "party", "peppy"],
+    "happy": ["feel good", "cheerful", "upbeat"],
+    "dance": ["party", "club", "upbeat", "dance pop"],
+    "melancholy": ["sad", "emotional", "heartbreak", "breakup"],
+    "sad": ["melancholy", "emotional", "heartbreak", "breakup", "sad song"],
+    "dark ambient": ["melancholy", "moody", "sad"],
+    "romantic": ["love", "love song", "romance"],
+    "calm": ["soft", "mellow", "soothing", "peaceful"],
+    "acoustic": ["unplugged", "soft", "mellow"],
+    # Genre chips (config.GENRES) — only ones unlikely to appear
+    # verbatim as real Last.fm tags need an entry here; plain matches
+    # like "rock", "bollywood", "sufi", "edm" work fine as-is.
+    "folk fusion": ["folk", "punjabi", "fusion"],
+    "club": ["party", "dance", "edm"],
+    "item number": ["dance", "party", "item song"],
+    "peppy": ["upbeat", "happy", "dance", "energetic"],
+    "heartbreak": ["sad", "breakup", "emotional", "melancholy"],
+    "wedding": ["sangeet", "celebration", "dance", "romantic"],
+    "qawwali": ["sufi", "devotional", "spiritual"],
+    "duet": ["romantic", "love song"],
+    "unplugged": ["acoustic", "soft", "mellow"],
+    "retro": ["90s", "2000s", "classic"],
+    "rap fusion": ["hip hop", "rap", "fusion"],
+}
+
+
+def _tag_matches(target: str, song_tags: list[str]) -> bool:
+    """
+    True if `target` (a lowercased mood-corner tag or genre name) is
+    considered present on a song — by exact match, substring match in
+    either direction (catches near-misses like "dance" vs "dance pop"
+    cheaply, without needing an explicit synonym for every variant),
+    or via the curated _TAG_SYNONYMS list above for terms unlikely to
+    appear verbatim in real Last.fm tagging at all.
+    """
+    candidates = {target} | set(_TAG_SYNONYMS.get(target, []))
+    for candidate in candidates:
+        for song_tag in song_tags:
+            if candidate in song_tag or song_tag in candidate:
+                return True
+    return False
 
 
 class MusicRecommender:
@@ -255,20 +318,34 @@ class MusicRecommender:
     def _get_artist_catalog(self) -> list[Song]:
         """
         Build (on first call) or return (on every call after) the
-        filtered artist's own top tracks, each enriched with its own
-        Last.fm tags.
+        filtered artist's own top tracks, each enriched with tags.
 
-        This costs 1 + N Last.fm calls the first time it's needed
+        This costs 1 + N (+1) Last.fm calls the first time it's needed
         (1 for the track list, up to N = artist_catalog_size for
-        per-track tags) — a real, one-time latency hit on whichever
-        request happens to trigger it first, paid once for the whole
-        deployed app's lifetime (see this class's docstring for why
-        that's the correct scope), never repeated after.
+        per-track tags, +1 for the artist-level fallback tags below) —
+        a real, one-time latency hit on whichever request happens to
+        trigger it first, paid once for the whole deployed app's
+        lifetime (see this class's docstring for why that's the
+        correct scope), never repeated after.
 
-        A track that Last.fm has no tags for keeps an empty tags list
-        and matched_by_mood=False — it still shows up (ranked by
-        popularity alone, via _ARTIST_POPULARITY_WEIGHT), it just
-        can't be matched by mood/genre specifically.
+        Track-level tagging on Last.fm is often genuinely sparse for
+        regional/less-mainstream catalogs — many individual tracks can
+        have zero tags of their own even when the artist overall is
+        well-tagged. Falling back to pure popularity ranking whenever
+        that happens would make every result identical regardless of
+        the user's mood/genre selection (exactly what was observed
+        before this fallback existed). So: fetch the artist's own
+        top-level tags ONCE, and use them for any track whose own
+        get_top_tags() comes back empty — coarser than per-track tags
+        (every such track shares the same fallback set), but still
+        lets mood/genre selection meaningfully change the ranking,
+        rather than collapsing to popularity alone.
+
+        A small delay between the per-track calls guards against
+        Last.fm's rate limiting kicking in during this burst (50
+        rapid sequential calls) and being silently read as "no tags"
+        by the broad except below — a plausible contributor to
+        results looking identical across different inputs.
         """
         if self._artist_catalog is not None:
             return self._artist_catalog
@@ -280,15 +357,46 @@ class MusicRecommender:
         except (LastFmError, Exception):
             catalog = []
 
+        try:
+            artist_level_tags = [
+                tag.lower() for tag in self._lastfm_client.get_artist_top_tags(self._artist_filter)
+            ]
+        except (LastFmError, Exception):
+            artist_level_tags = []
+
+        tracks_with_own_tags = 0
         for song in catalog:
             try:
                 tags = self._lastfm_client.get_top_tags(song.artist, song.title)
             except (LastFmError, Exception):
                 tags = []
-            song.tags = [tag.lower() for tag in tags]
-            song.matched_by_mood = bool(tags)
+
+            if tags:
+                tracks_with_own_tags += 1
+                song.tags = [tag.lower() for tag in tags]
+                song.matched_by_mood = True
+            elif artist_level_tags:
+                # No tags of its own — fall back to the artist's
+                # overall tags so this track can still participate in
+                # mood/genre ranking, just at coarser granularity.
+                song.tags = list(artist_level_tags)
+                song.matched_by_mood = False
+            else:
+                song.tags = []
+                song.matched_by_mood = False
+
+            time.sleep(_ARTIST_TAG_FETCH_DELAY_SECONDS)
 
         self._artist_catalog = catalog
+        # Not surfaced to the UI — a plain print is enough for anyone
+        # tailing server logs to confirm whether sparse track-level
+        # tagging (expected for this kind of catalog) or something
+        # else (e.g. rate limiting) is what's driving the fallback.
+        print(
+            f"[recommender] artist catalog built: {len(catalog)} tracks, "
+            f"{tracks_with_own_tags} had their own tags, "
+            f"artist-level fallback tags: {len(artist_level_tags)}"
+        )
         return catalog
 
     def _get_artist_filtered_songs(
@@ -337,7 +445,7 @@ class MusicRecommender:
         scored: list[tuple[float, Song]] = []
         for song in catalog:
             overlap_score = sum(
-                weight for tag, weight in combined_weights.items() if tag in song.tags
+                weight for tag, weight in combined_weights.items() if _tag_matches(tag, song.tags)
             )
             popularity_bonus = song.relevance_score * _ARTIST_POPULARITY_WEIGHT
             scored.append((overlap_score + popularity_bonus, song))
@@ -358,13 +466,13 @@ class MusicRecommender:
             return []
 
         played_key = played_song.identity_key()
-        played_tags = set(played_song.tags)
+        played_tags = played_song.tags
 
         scored: list[tuple[float, Song]] = []
         for song in catalog:
             if song.identity_key() == played_key:
                 continue
-            overlap = len(played_tags & set(song.tags))
+            overlap = sum(1 for tag in played_tags if _tag_matches(tag, song.tags))
             popularity_bonus = song.relevance_score * _ARTIST_POPULARITY_WEIGHT
             scored.append((overlap + popularity_bonus, song))
 

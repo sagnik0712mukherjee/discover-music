@@ -142,27 +142,30 @@ MOOD_WEIGHT_THRESHOLD: float = 0.05
 # ---------------------------------------------------------------------------
 # Genre list — for the chip panel beside the mood map
 # ---------------------------------------------------------------------------
-# All genres are selected by default. User can deselect to narrow results.
-# Genre tags are sent directly to Last.fm's tag.getTopTracks endpoint and
-# are blended with the mood-tag candidates in core/recommender.py.
+# None selected by default. User opts into whichever genres they want
+# blended in. Genre tags are sent directly to Last.fm's tag.getTopTracks
+# endpoint (open-discovery mode) or checked against the filtered
+# artist's own tags (see core/recommender.py's artist-filter path) and
+# blended with the mood-tag candidates.
+#
+# Curated for Pritam Chakraborty's actual stylistic range across his
+# Bollywood catalog — not a generic Western genre list — spanning his
+# romantic ballads, folk/Sufi fusion work, high-energy club/item
+# numbers, rock-influenced tracks, and rap collaborations. 18 entries,
+# rendered as a 3×6 grid (ui/genre_panel.py chunks in rows of 3).
 GENRES: list[str] = [
-    "Pop", "Rock", "Hip-Hop", "Jazz", "Classical", "Electronic",
-    "R&B", "Metal", "Indie", "Folk", "Reggae", "Blues", "Soul",
-    "Punk", "Country", "Latin", "World", "Ambient", "K-Pop",
-    "Alternative", "Funk", "House", "Lo-Fi", "Afrobeats",
+    "Bollywood", "Romantic", "Sufi",
+    "Folk Fusion", "Dance", "Club",
+    "Item Number", "Rock", "Peppy",
+    "Heartbreak", "Wedding", "Acoustic",
+    "Qawwali", "EDM", "Duet",
+    "Unplugged", "Retro", "Rap Fusion",
 ]
 
 # ---------------------------------------------------------------------------
 # Artist filter
 # ---------------------------------------------------------------------------
-# When set, EVERY result — position-based discovery and "similar songs"
-# alike — is restricted to this one artist's own catalog. See
-# core/recommender.py for how this flips the whole ranking pipeline:
-# instead of querying Last.fm's global tag charts (which would almost
-# never surface a specific artist), it fetches the artist's own top
-# tracks once and ranks THAT catalog by mood/genre tag overlap.
-# Set to None to disable and return to open, cross-artist discovery.
-ARTIST_FILTER: str | None = "Pritam Chakraborty"
+ARTIST_FILTER: str | None = "Pritam"
 
 # How many of the artist's own top tracks (by Last.fm popularity) to
 # pull into the catalog when ARTIST_FILTER is set. Each one costs an

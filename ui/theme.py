@@ -80,7 +80,7 @@ _HEADER_HTML = """
 </style>
 
 <div class="app-header-wrap">
-    <div class="app-header-title">🎵 MUSIC <span class="accent">— OUT OF THE BLUE</span></div>
+    <div class="app-header-title">🎵 PRITAM'S MUSIC <span class="accent">— ON THE GO!</span></div>
 </div>
 """
 

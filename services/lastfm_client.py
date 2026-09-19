@@ -150,10 +150,42 @@ class LastFmClient:
         variations (e.g. a track credited slightly differently than
         exactly typed) to the closest real match, rather than returning
         no data for an otherwise-correct near-match.
+
+        Returns an empty list if Last.fm genuinely has no tags for this
+        specific track — common for regional/less-mainstream catalogs,
+        where track-level tagging is much sparser than artist-level
+        tagging. See get_artist_top_tags for the fallback this app uses
+        in that case, rather than treating an empty result here as an
+        error.
         """
         payload = self._get(
             "track.gettoptags",
             {"artist": artist, "track": title, "autocorrect": "1"},
+        )
+        raw_tags = payload.get("toptags", {}).get("tag", [])
+        return [raw.get("name", "") for raw in raw_tags[:limit] if raw.get("name")]
+
+    def get_artist_top_tags(self, artist: str, limit: int = 20) -> list[str]:
+        """
+        Fetch the top user-supplied tags for an ARTIST as a whole,
+        rather than one specific track (contrast with get_top_tags).
+
+        Artist-level tagging on Last.fm is consistently richer than
+        track-level tagging, especially for regional/less-mainstream
+        catalogs where individual tracks often have zero tags of their
+        own even when the artist is well-tagged overall. Used by
+        core/recommender.py's artist-filter catalog builder as a
+        fallback: any catalog track whose own get_top_tags() comes back
+        empty still gets SOME tag signal to rank by, via this coarser,
+        artist-wide set, rather than being reduced to pure popularity
+        ranking with nothing to distinguish it by mood/genre at all.
+
+        autocorrect=1 matches this file's other artist-name-dependent
+        calls.
+        """
+        payload = self._get(
+            "artist.gettoptags",
+            {"artist": artist, "autocorrect": "1"},
         )
         raw_tags = payload.get("toptags", {}).get("tag", [])
         return [raw.get("name", "") for raw in raw_tags[:limit] if raw.get("name")]
