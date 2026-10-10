@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<!--
+  ui/components/mood_map_frontend/index.html
+
+  Why this file exists (read this before touching map_widget.py):
+
+  streamlit-image-coordinates gave us a maintained, bug-free widget,
+  but it has no client-side drag feedback at all — the marker can only
+  move AFTER a full round trip to the Python server and back (new PNG
+  generated, sent over the websocket, redrawn). On a hosted free tier
+  that round trip is ~100-500ms+, which is exactly the "laggy, RUNNING
+  on every drag" feeling that was reported.
+
+  streamlit-drawable-canvas (the package we dropped earlier for a
+  different, unrelated bug — a silent blank render on Streamlit Cloud)
+  never had that problem, because its drag feedback happened entirely
+  inside the browser via its own bundled JS/canvas code — the Python
+  side was only ever told the FINAL position, once.
+
+  This file reproduces that same idea in the smallest possible way: a
+  single static HTML page, no npm, no build step, no React, no
+  third-party package to go stale — just the background image PIL
+  already builds (passed in as a base64 PNG) plus a marker <div> moved
+  with plain Pointer Events. Dragging moves the marker purely with
+  CSS, with zero server round trips, so it tracks the finger/cursor
+  instantly. Streamlit is only told the final position once, on
+  release (pointerup) — exactly mirroring the old canvas's behavior,
+  but on a component we fully control instead of an abandoned 2021
+  package.
+
+  This talks to Streamlit using its raw Components postMessage
+  protocol (the same protocol every component — including the two
+  above — compiles down to). The exact message shapes below
+  (isStreamlitMessage, streamlit:componentReady / :render /
+  :setComponentValue / :setFrameHeight, apiVersion: 1) were confirmed
+  by reading the actual strings out of the installed Streamlit
+  frontend bundle (static/static/js/main.*.js) rather than assumed
+  from memory, since getting any of this wrong fails silently (the
+  component just never receives a value).
+-->
+<html>
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: transparent;
+    /* touch-action: none is what stops iOS Safari from trying to
+       scroll/zoom the page while the user is dragging the marker -
+       without this, dragging on an iPad fights the browser. */
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  #map-root {
+    position: relative;
+    cursor: grab;
+  }
+  #map-root.dragging {
+    cursor: grabbing;
+  }
+  #bg-image {
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    -webkit-user-drag: none;
+  }
+  #marker {
+    position: absolute;
+    border-radius: 50%;
+    transform: translate(-50%, -50%);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+    will-change: left, top;
+  }
+</style>
+</head>
+<body>
+<div id="map-root">
+  <img id="bg-image" draggable="false" />
+  <div id="marker"></div>
+</div>
+<script>
+(function () {
+  "use strict";
+
+  // ---- Raw Streamlit Components protocol (see file docstring) ----
+  var API_VERSION = 1;
+
+  function sendToStreamlit(type, extra) {
+    var payload = Object.assign({ isStreamlitMessage: true, type: type }, extra || {});
+    window.parent.postMessage(payload, "*");
+  }
+
+  function notifyReady() {
+    sendToStreamlit("streamlit:componentReady", { apiVersion: API_VERSION });
+  }
+
+  function setFrameHeight(height) {
+    sendToStreamlit("streamlit:setFrameHeight", { height: height });
+  }
+
+  function setValue(x, y) {
+    sendToStreamlit("streamlit:setComponentValue", {
+      value: { x: x, y: y },
+      dataType: "json"
+    });
+  }
+
+  // ---- Map widget state ----
+  var root = document.getElementById("map-root");
+  var bgImage = document.getElementById("bg-image");
+  var marker = document.getElementById("marker");
+
+  var size = 480;          // square canvas side, px — overwritten by args.width
+  var markerRadius = 16;   // px — overwritten by args.marker_radius
+  var currentX = 50.0;     // 0-100 grid, last value received FROM Python
+  var currentY = 50.0;
+  var dragging = false;
+
+  function applyMarkerPosition(gridX, gridY) {
+    // gridX/gridY are 0-100; convert to pixel position within the
+    // square canvas. y=0 is the top, matching the PIL-drawn background.
+    var px = (gridX / 100) * size;
+    var py = (gridY / 100) * size;
+    marker.style.left = px + "px";
+    marker.style.top = py + "px";
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function pointerEventToGrid(evt) {
+    var rect = root.getBoundingClientRect();
+    var px = clamp(evt.clientX - rect.left, 0, rect.width);
+    var py = clamp(evt.clientY - rect.top, 0, rect.height);
+    return {
+      x: (px / rect.width) * 100,
+      y: (py / rect.height) * 100
+    };
+  }
+
+  function onPointerDown(evt) {
+    dragging = true;
+    root.classList.add("dragging");
+    root.setPointerCapture(evt.pointerId);
+    var grid = pointerEventToGrid(evt);
+    currentX = grid.x;
+    currentY = grid.y;
+    applyMarkerPosition(currentX, currentY);
+    evt.preventDefault();
+  }
+
+  function onPointerMove(evt) {
+    if (!dragging) return;
+    // Purely local — no Streamlit call here. This is what makes the
+    // drag itself feel instant: the marker follows the pointer with
+    // zero network/server involvement until release.
+    var grid = pointerEventToGrid(evt);
+    currentX = grid.x;
+    currentY = grid.y;
+    applyMarkerPosition(currentX, currentY);
+    evt.preventDefault();
+  }
+
+  function onPointerUp(evt) {
+    if (!dragging) return;
+    dragging = false;
+    root.classList.remove("dragging");
+    try { root.releasePointerCapture(evt.pointerId); } catch (e) { /* already released */ }
+    var grid = pointerEventToGrid(evt);
+    currentX = grid.x;
+    currentY = grid.y;
+    applyMarkerPosition(currentX, currentY);
+    // The ONLY round trip to Python in the whole interaction.
+    setValue(currentX, currentY);
+    evt.preventDefault();
+  }
+
+  root.addEventListener("pointerdown", onPointerDown);
+  root.addEventListener("pointermove", onPointerMove);
+  root.addEventListener("pointerup", onPointerUp);
+  root.addEventListener("pointercancel", onPointerUp);
+
+  function onRender(event) {
+    var args = event.data.args;
+    if (!args) return;
+
+    size = args.width || size;
+    markerRadius = (args.marker_radius !== undefined) ? args.marker_radius : markerRadius;
+
+    root.style.width = size + "px";
+    root.style.height = size + "px";
+    bgImage.style.width = size + "px";
+    bgImage.style.height = size + "px";
+    marker.style.width = (markerRadius * 2) + "px";
+    marker.style.height = (markerRadius * 2) + "px";
+    marker.style.backgroundColor = args.marker_fill_color || "rgba(99,102,241,0.8)";
+    marker.style.border = "2px solid " + (args.marker_stroke_color || "rgba(67,56,202,1)");
+
+    if (args.background_image_data_url && bgImage.src !== args.background_image_data_url) {
+      bgImage.src = args.background_image_data_url;
+    }
+
+    // Only snap the marker to a Python-provided position while the
+    // user ISN'T actively dragging — otherwise a render event racing
+    // with an in-progress drag would yank the marker back mid-gesture
+    // (the same class of bug the earlier seek-slider work ran into
+    // with value= overwriting live interaction).
+    if (!dragging && typeof args.x === "number" && typeof args.y === "number") {
+      currentX = args.x;
+      currentY = args.y;
+      applyMarkerPosition(currentX, currentY);
+    }
+
+    setFrameHeight(size);
+  }
+
+  window.addEventListener("message", function (event) {
+    if (event.data && event.data.type === "streamlit:render") {
+      onRender(event);
+    }
+  });
+
+  notifyReady();
+  setFrameHeight(size);
+})();
+</script>
+</body>
+</html>

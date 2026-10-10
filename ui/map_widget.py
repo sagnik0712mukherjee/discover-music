@@ -9,73 +9,54 @@ normalized to the 0-100 grid:
 The map shows only 4 axis labels - no genre labels. Genres live in
 the separate chip panel (ui/genre_panel.py).
 
-WHY THIS ISN'T streamlit-drawable-canvas ANYMORE: that package (last
-touched ~2021) broke in three separate, unrelated ways across this
-project - an AttributeError from a moved Streamlit internal
-(image_to_url), a TypeError from st.container(key=...) not existing
-on our pinned Streamlit version, and finally a silent blank-canvas
-render on Streamlit Cloud with no Python-side error at all (verified:
-the exact same Python call chain runs clean locally via AppTest, so
-the failure is inside that package's own 2021-era bundled JS, which
-we don't control and nobody maintains anymore). A community "-fix"
-fork exists but was checked and rejected: its patched import
-(streamlit.elements.image_utils) doesn't exist on ANY Streamlit
-version from 1.37 through the latest 1.64 release - the real path is
-streamlit.elements.lib.image_utils, so the fork is itself stale.
+HISTORY OF THIS WIDGET (read before changing the drag mechanism again):
 
-Replaced with streamlit-image-coordinates (maintained by a Streamlit
-staffer, modern single-file bundle, actively updated). It has no
-built-in draggable shape - it's a plain image plus a click/drag
-listener - so this module draws its own marker circle onto the
-composed image every render (see _build_marker_image) and reads back
-where the user clicked or released a drag via click_and_drag=True,
-which reports the mouse-down point as (x1, y1) and the mouse-up point
-as (x2, y2). Using the release point (x2, y2) as the new position
-gives the same practical feel as dragging a real shape - press
-anywhere, drag, release, the marker jumps there - just without a
-shape that visually follows the cursor mid-drag.
+1. streamlit-drawable-canvas (original choice) - dropped after THREE
+   separate failures, the last being a silent blank-canvas render on
+   Streamlit Cloud with zero Python-side error (confirmed: identical
+   Python call chain runs clean locally via AppTest, so the bug was in
+   that package's own unmaintained 2021-era bundled JS).
 
-WHY DRAGGING FELT LAGGY ("RUNNING" on every drag): every time this
-component reports a new coordinate, Streamlit's default behavior is
-to rerun the ENTIRE script top to bottom - not just this widget. That
-meant every drag re-ran the whole of app.py: rebuilding the genre
-panel, the header, the columns layout, and (worst offender) this
-module's background image from scratch, including re-reading a font
-file off disk via _load_font on every single rerun. None of that is
-needed just to move a marker. Two fixes, both below:
+2. streamlit-image-coordinates (first replacement) - fixed the blank
+   render (it's actively maintained), but has NO client-side drag
+   feedback: the marker can only move after a full round trip to the
+   Python server and back for every drag event. On a hosted free tier
+   that's the "laggy, RUNNING on every drag" problem that was reported
+   next - an architectural limitation of that package, not a bug to
+   patch.
 
-  1. The static background (quadrant tints, crosshair lines, the 4
-     axis labels, the font load) is now built ONCE and cached with
-     st.cache_resource (_get_cached_background). Every subsequent
-     drag just pastes a small marker circle onto a copy of that
-     cached image - no redrawing, no font disk I/O.
+3. THIS custom component (current) - a small, self-written, static
+   HTML/CSS/vanilla-JS page (no npm, no build step, no third-party
+   package to go stale) declared via Streamlit's built-in
+   components.v1.declare_component. It moves the marker with plain
+   Pointer Events entirely inside the browser - zero server calls
+   while dragging - and tells Python the final position exactly ONCE,
+   on release. That's what made approach #1 feel smooth in the first
+   place; this gets the same feel without depending on an abandoned
+   package. The actual frontend lives in
+   ui/components/mood_map_frontend/index.html - its own docstring
+   covers the wire protocol in detail.
 
-  2. The interactive widget itself now lives inside its own
-     st.experimental_fragment (_render_map_fragment). Streamlit
-     reruns only the fragment's own code when something inside it
-     changes - the rest of app.py (genre panel, header, buttons) is
-     left untouched. That's what actually removes the full-page
-     "RUNNING" round trip per drag; the cached image is just extra
-     headroom for the remaining fragment-only rerun.
-
-Position changes are still written to st.session_state from inside
-the fragment, so main() can read the latest value through
-render_mood_map()'s return value whenever it runs next (e.g. on the
-"Surprise me!" click), exactly as before.
+The background image (quadrant tints, crosshair lines, the 4 axis
+labels) is still built with PIL exactly as before and cached with
+st.cache_resource, then handed to the component as a base64 PNG data
+URL - the component just overlays a marker div on top of it and
+reports back where that marker ends up.
 """
 
+import base64
+from io import BytesIO
+from pathlib import Path
+
 import streamlit as st
+import streamlit.components.v1 as components
 from PIL import Image, ImageDraw, ImageFont
-from streamlit_image_coordinates import streamlit_image_coordinates
 
 CANVAS_SIZE = 480
 CIRCLE_RADIUS = 16
 
-# PIL-native RGBA tuples (0-255 per channel, including alpha) - not the
-# CSS rgba(...) string format the old canvas-based version used, since
-# PIL's own drawing calls want actual tuples here.
-_MARKER_FILL_COLOR = (99, 102, 241, 204)     # indigo, ~80% opacity
-_MARKER_STROKE_COLOR = (67, 56, 202, 255)    # solid indigo outline
+_MARKER_FILL_CSS = "rgba(99, 102, 241, 0.8)"     # indigo, ~80% opacity
+_MARKER_STROKE_CSS = "rgba(67, 56, 202, 1)"      # solid indigo outline
 
 _WIDGET_KEY = "mood_map_widget"
 _POSITION_STATE_KEY = "mood_map_position"
@@ -99,6 +80,11 @@ _AXIS_LABELS = [
 
 _LABEL_FONT_SIZE = 26
 
+_COMPONENT_DIR = Path(__file__).parent / "components" / "mood_map_frontend"
+_mood_map_component = components.declare_component(
+    "mood_map_native_drag", path=str(_COMPONENT_DIR)
+)
+
 
 def _load_font(size: int) -> ImageFont.ImageFont:
     """
@@ -107,9 +93,8 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     if none are found, so the app always renders even on a minimal
     deployment image without these fonts installed.
 
-    Only ever called once now, from inside _get_cached_background -
-    see that function's docstring for why this used to be the single
-    biggest contributor to per-drag lag.
+    Only ever called once per process, from inside
+    _get_cached_background_data_url.
     """
     candidates = [
         # macOS - bold first
@@ -138,12 +123,9 @@ def _build_background_image() -> Image.Image:
       - 4 faint quadrant tints
       - Thin crosshair lines
       - 4 axis labels
-    Does NOT include the marker circle - see _build_marker_image,
-    which draws that on top of a fresh copy of the CACHED version of
-    this (_get_cached_background) every render, so the marker always
-    reflects the current position without needing to regenerate the
-    background - tints, lines, labels, font load and all - from
-    scratch on every drag.
+    Does NOT include the marker - the frontend component draws and
+    moves that itself (see ui/components/mood_map_frontend/index.html)
+    so dragging never needs to touch this image again.
     """
     img = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), color=(248, 248, 252))
     draw = ImageDraw.Draw(img, "RGBA")
@@ -178,90 +160,31 @@ def _build_background_image() -> Image.Image:
 
 
 @st.cache_resource
-def _get_cached_background() -> Image.Image:
+def _get_cached_background_data_url() -> str:
     """
-    Build the static background exactly once per server process (not
-    once per session, not once per rerun - st.cache_resource shares
-    this single Image object across every visitor, which is safe
-    because nothing ever mutates it directly; see _build_marker_image,
-    which always works on a .copy()).
-
-    This is what removes the font-disk-read + full redraw that used
-    to happen on every single drag event.
+    Build the static background exactly once per server process and
+    encode it as a base64 PNG data URL ready to hand straight to the
+    frontend's <img> tag. Shared across every visitor - safe, since
+    the image is never mutated (no marker baked into it anymore).
     """
-    return _build_background_image()
-
-
-def _build_marker_image(grid_x: float, grid_y: float) -> Image.Image:
-    """
-    Draw the position marker circle onto a COPY of the cached
-    background, at the given 0-100 grid position converted to pixels.
-    Never mutates the cached background itself.
-    """
-    img = _get_cached_background().copy().convert("RGBA")
-    draw = ImageDraw.Draw(img, "RGBA")
-
-    px = (grid_x / 100.0) * CANVAS_SIZE
-    py = (grid_y / 100.0) * CANVAS_SIZE
-
-    draw.ellipse(
-        [px - CIRCLE_RADIUS, py - CIRCLE_RADIUS, px + CIRCLE_RADIUS, py + CIRCLE_RADIUS],
-        fill=_MARKER_FILL_COLOR,
-        outline=_MARKER_STROKE_COLOR,
-        width=2,
-    )
-    return img
-
-
-@st.experimental_fragment
-def _render_map_fragment() -> None:
-    """
-    The actual interactive widget, isolated in its own fragment.
-
-    Streamlit's fragment behavior: when a widget INSIDE a fragment
-    produces a new value, only the fragment's own function body is
-    re-executed - the rest of app.py (genre panel, header, "Surprise
-    me!" button, bubble grid) is left exactly as it was last drawn.
-    That's the actual fix for the laggy "RUNNING" feeling: a drag used
-    to mean "rerun everything", now it means "rerun this ~15-line
-    function". The new position is written straight to
-    st.session_state, which is all render_mood_map() needs to hand
-    the latest value back to the rest of the app on its next real run.
-    """
-    current_x, current_y = st.session_state[_POSITION_STATE_KEY]
-    marker_image = _build_marker_image(current_x, current_y)
-
-    result = streamlit_image_coordinates(
-        marker_image,
-        key=_WIDGET_KEY,
-        width=CANVAS_SIZE,
-        click_and_drag=True,
-        cursor="grab",
-    )
-
-    if result is not None:
-        rendered_width = result.get("width") or CANVAS_SIZE
-        rendered_height = result.get("height") or CANVAS_SIZE
-        # click_and_drag=True reports mouse-down as x1,y1 and mouse-up
-        # as x2,y2 - the release point is what should become the new
-        # position (matches "press, drag, release" intuition). Falls
-        # back to x1,y1 for a plain click with no real drag movement,
-        # in case the frontend ever omits x2,y2 for that case.
-        px = result.get("x2", result.get("x1"))
-        py = result.get("y2", result.get("y1"))
-        if px is not None and py is not None:
-            new_x = max(0.0, min(100.0, (px / rendered_width) * 100.0))
-            new_y = max(0.0, min(100.0, (py / rendered_height) * 100.0))
-            new_position = (new_x, new_y)
-            if new_position != st.session_state[_POSITION_STATE_KEY]:
-                st.session_state[_POSITION_STATE_KEY] = new_position
+    img = _build_background_image()
+    buffer = BytesIO()
+    img.save(buffer, format="PNG")
+    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def render_mood_map() -> tuple[float, float]:
     """
     Render the labeled 2-axis mood map with a marker the user can
-    click or click-and-drag to reposition, and return the current
-    position as (x, y) on the 0-100 grid.
+    click or drag to reposition, and return the current position as
+    (x, y) on the 0-100 grid.
+
+    Dragging is handled entirely client-side by the component in
+    ui/components/mood_map_frontend/index.html - Python only hears
+    about the NEW position once, when the component calls
+    streamlit:setComponentValue on release. That single value is what
+    `result` holds below.
 
     Never returns None - the position is always initialized (dead
     center on first render) and persisted in st.session_state, so
@@ -272,6 +195,23 @@ def render_mood_map() -> tuple[float, float]:
     if _POSITION_STATE_KEY not in st.session_state:
         st.session_state[_POSITION_STATE_KEY] = _DEFAULT_POSITION
 
-    _render_map_fragment()
+    current_x, current_y = st.session_state[_POSITION_STATE_KEY]
+
+    result = _mood_map_component(
+        width=CANVAS_SIZE,
+        marker_radius=CIRCLE_RADIUS,
+        marker_fill_color=_MARKER_FILL_CSS,
+        marker_stroke_color=_MARKER_STROKE_CSS,
+        background_image_data_url=_get_cached_background_data_url(),
+        x=current_x,
+        y=current_y,
+        key=_WIDGET_KEY,
+        default={"x": current_x, "y": current_y},
+    )
+
+    if result is not None and "x" in result and "y" in result:
+        new_x = max(0.0, min(100.0, float(result["x"])))
+        new_y = max(0.0, min(100.0, float(result["y"])))
+        st.session_state[_POSITION_STATE_KEY] = (new_x, new_y)
 
     return st.session_state[_POSITION_STATE_KEY]
