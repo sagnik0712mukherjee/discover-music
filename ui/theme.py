@@ -96,6 +96,22 @@ _GLOBAL_CSS = """
     background: transparent;
 }
 
+/* Hide Streamlit's top-right chrome (Share / star / edit / GitHub /
+   Deploy / the three-dot menu) - the header bar stays as plain blank
+   space. Only the toolbar contents are hidden, not the header itself,
+   so the page layout/spacing doesn't shift. */
+[data-testid="stToolbar"],
+[data-testid="stDecoration"],
+[data-testid="stStatusWidget"],
+.stDeployButton,
+#MainMenu {
+    display: none !important;
+    visibility: hidden !important;
+}
+footer {
+    visibility: hidden;
+}
+
 /* Default text color: white, app-wide, including captions (Streamlit
    renders st.caption as a <small> tag with its own muted color). */
 [data-testid="stAppViewContainer"],

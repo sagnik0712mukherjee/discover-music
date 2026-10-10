@@ -56,7 +56,7 @@ Uses only plain HTML/CSS via st.markdown(unsafe_allow_html=True) for
 the hidden iframe (no JS) plus Streamlit's own st.button for controls.
 """
 
-from datetime import time as time_of_day
+from datetime import time as time_of_day, timedelta
 from typing import Callable
 
 import streamlit as st
@@ -222,16 +222,34 @@ def render_now_playing(
             clamped_offset = max(0.0, min(current_offset_seconds, duration_seconds))
             slider_col, time_col = st.columns([5, 2])
             with slider_col:
+                slider_key = f"seek_slider_{song.identity_key()}"
+                # WHY NO value= HERE: in Streamlit a widget's identity is
+                # derived from its parameters, so passing a value= that
+                # changes every rerun (the live playback position, as it
+                # used to) makes Streamlit treat each periodic fragment
+                # rerun as a brand-new slider - which silently throws
+                # away a drag in progress. That's why the slider could
+                # not be dragged at all. Instead the parameters stay
+                # constant (same key/min/max every time) and the live
+                # position is pushed in through st.session_state before
+                # the widget is created. When the user releases a drag,
+                # on_change seeks playback to that spot and the next
+                # render simply shows the new position.
+                st.session_state[slider_key] = _seconds_to_time_of_day(clamped_offset)
                 st.slider(
                     "Progress",
                     min_value=time_of_day(0, 0, 0),
                     max_value=_seconds_to_time_of_day(duration_seconds),
-                    value=_seconds_to_time_of_day(clamped_offset),
+                    # step MUST be set: Streamlit's time-slider default
+                    # step is 15 MINUTES, which on a ~3-minute song only
+                    # allows 0:00 or the very end - the real reason the
+                    # slider "couldn't be dragged" to e.g. 2:50.
+                    step=timedelta(seconds=1),
                     format="mm:ss",
-                    key=f"seek_slider_{song.identity_key()}",
+                    key=slider_key,
                     label_visibility="collapsed",
                     on_change=on_seek_to,
-                    args=(f"seek_slider_{song.identity_key()}",),
+                    args=(slider_key,),
                 )
             with time_col:
                 st.caption(f"{_format_time(clamped_offset)} / {_format_time(duration_seconds)}")

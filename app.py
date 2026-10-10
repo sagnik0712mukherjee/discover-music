@@ -80,7 +80,7 @@ _SEEK_STEP_SECONDS = 10.0
 # rerunning so often it's wasteful. This now drives st.experimental_fragment's
 # own run_every, not a separate polling component — see
 # _render_now_playing_section below for why that distinction matters.
-_AUTO_ADVANCE_POLL_SECONDS = 3
+_AUTO_ADVANCE_POLL_SECONDS = 1
 
 
 @st.cache_resource
