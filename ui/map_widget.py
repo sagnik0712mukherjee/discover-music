@@ -1,37 +1,64 @@
 """
 ui/map_widget.py
 
-Renders the 2-axis mood map with a draggable circle and returns the
-circle's dropped position, normalized to the 0-100 grid:
-    x=0 → Dark,       x=100 → Positive
-    y=0 → Energetic,  y=100 → Calm   (y=0 is the top of the canvas)
+Renders the 2-axis mood map and returns the current marker position,
+normalized to the 0-100 grid:
+    x=0 -> Dark,       x=100 -> Positive
+    y=0 -> Energetic,  y=100 -> Calm   (y=0 is the top of the canvas)
 
-The map shows only 4 axis labels — no genre labels. Genres live in
+The map shows only 4 axis labels - no genre labels. Genres live in
 the separate chip panel (ui/genre_panel.py).
 
-Each quadrant is tinted with a very faint color to give an ambient
-hint of the mood zone the circle is in, without cluttering the space.
-"""
+WHY THIS ISN'T streamlit-drawable-canvas ANYMORE: that package (last
+touched ~2021) broke in three separate, unrelated ways across this
+project - an AttributeError from a moved Streamlit internal
+(image_to_url), a TypeError from st.container(key=...) not existing
+on our pinned Streamlit version, and finally a silent blank-canvas
+render on Streamlit Cloud with no Python-side error at all (verified:
+the exact same Python call chain runs clean locally via AppTest, so
+the failure is inside that package's own 2021-era bundled JS, which
+we don't control and nobody maintains anymore). A community "-fix"
+fork exists but was checked and rejected: its patched import
+(streamlit.elements.image_utils) doesn't exist on ANY Streamlit
+version from 1.37 through the latest 1.64 release - the real path is
+streamlit.elements.lib.image_utils, so the fork is itself stale.
 
-from io import BytesIO
+Replaced with streamlit-image-coordinates (maintained by a Streamlit
+staffer, modern single-file bundle, actively updated). It has no
+built-in draggable shape - it's a plain image plus a click/drag
+listener - so this module draws its own marker circle onto the
+composed image every render (see _build_marker_image) and reads back
+where the user clicked or released a drag via click_and_drag=True,
+which reports the mouse-down point as (x1, y1) and the mouse-up point
+as (x2, y2). Using the release point (x2, y2) as the new position
+gives the same practical feel as dragging a real shape - press
+anywhere, drag, release, the marker jumps there - just without a
+shape that visually follows the cursor mid-drag.
+"""
 
 import streamlit as st
 from PIL import Image, ImageDraw, ImageFont
-from streamlit_drawable_canvas import st_canvas
+from streamlit_image_coordinates import streamlit_image_coordinates
 
 CANVAS_SIZE = 480
 CIRCLE_RADIUS = 16
-CIRCLE_FILL_COLOR = "rgba(99, 102, 241, 0.80)"   # indigo, semi-transparent
-CIRCLE_STROKE_COLOR = "#4338CA"
 
-_CANVAS_KEY = "mood_map_canvas"
+# PIL-native RGBA tuples (0-255 per channel, including alpha) - not the
+# CSS rgba(...) string format the old canvas-based version used, since
+# PIL's own drawing calls want actual tuples here.
+_MARKER_FILL_COLOR = (99, 102, 241, 204)     # indigo, ~80% opacity
+_MARKER_STROKE_COLOR = (67, 56, 202, 255)    # solid indigo outline
 
-# Quadrant tints (RGBA) — very faint, just enough to signal mood zones.
+_WIDGET_KEY = "mood_map_widget"
+_POSITION_STATE_KEY = "mood_map_position"
+_DEFAULT_POSITION = (50.0, 50.0)  # dead center
+
+# Quadrant tints (RGBA) - very faint, just enough to signal mood zones.
 _QUADRANT_COLORS = [
-    (180, 40,  40,  18),   # dark+energetic → faint red
-    (255, 200,  40,  18),  # positive+energetic → faint yellow
-    (60,  60, 160,  18),   # dark+calm → faint blue
-    (40, 160,  80,  18),   # positive+calm → faint green
+    (180, 40,  40,  18),   # dark+energetic -> faint red
+    (255, 200,  40,  18),  # positive+energetic -> faint yellow
+    (60,  60, 160,  18),   # dark+calm -> faint blue
+    (40, 160,  80,  18),   # positive+calm -> faint green
 ]
 
 # Axis label text and anchor positions
@@ -48,18 +75,17 @@ _LABEL_FONT_SIZE = 26
 def _load_font(size: int) -> ImageFont.ImageFont:
     """
     Try to load a clean, BOLD sans-serif font from common system paths
-    (bold variants listed first — request was for the axis labels to
-    read bolder/cleaner). Falls back to PIL's built-in default if none
-    are found, so the app always renders even on a minimal deployment
-    image without these fonts installed.
+    (bold variants listed first). Falls back to PIL's built-in default
+    if none are found, so the app always renders even on a minimal
+    deployment image without these fonts installed.
     """
     candidates = [
-        # macOS — bold first
+        # macOS - bold first
         "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
         "/System/Library/Fonts/Helvetica.ttc",
         "/Library/Fonts/Arial.ttf",
         "/System/Library/Fonts/Supplemental/Arial.ttf",
-        # Linux / Streamlit Cloud — bold first
+        # Linux / Streamlit Cloud - bold first
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -70,7 +96,6 @@ def _load_font(size: int) -> ImageFont.ImageFont:
             return ImageFont.truetype(path, size)
         except (IOError, OSError):
             continue
-    # Last resort: PIL built-in (looks basic but never fails)
     return ImageFont.load_default()
 
 
@@ -80,7 +105,11 @@ def _build_background_image() -> Image.Image:
       - Light grey base
       - 4 faint quadrant tints
       - Thin crosshair lines
-      - 4 axis labels (larger, system font)
+      - 4 axis labels
+    Does NOT include the marker circle - see _build_marker_image,
+    which draws that on top of a fresh copy of this every render, so
+    the marker always reflects the current position without needing
+    to regenerate the whole background from scratch each time.
     """
     img = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), color=(248, 248, 252))
     draw = ImageDraw.Draw(img, "RGBA")
@@ -88,7 +117,6 @@ def _build_background_image() -> Image.Image:
     cx = CANVAS_SIZE // 2
     cy = CANVAS_SIZE // 2
 
-    # Quadrant tints
     tint_rects = [
         (0,  0,  cx, cy, _QUADRANT_COLORS[0]),
         (cx, 0,  CANVAS_SIZE, cy, _QUADRANT_COLORS[1]),
@@ -98,19 +126,16 @@ def _build_background_image() -> Image.Image:
     for x0, y0, x1, y1, color in tint_rects:
         draw.rectangle([x0, y0, x1, y1], fill=color)
 
-    # Crosshair lines
     line_color = (200, 200, 210, 200)
     draw.line([(cx, 0), (cx, CANVAS_SIZE)], fill=line_color, width=1)
     draw.line([(0, cy), (CANVAS_SIZE, cy)], fill=line_color, width=1)
 
-    # Outer border
     draw.rectangle([0, 0, CANVAS_SIZE - 1, CANVAS_SIZE - 1],
                    outline=(180, 180, 195), width=1)
 
-    # Axis labels — larger, system font
     font = _load_font(_LABEL_FONT_SIZE)
-    label_color = (15, 71, 92)       # deep teal — matches the app's gradient family
-    shadow_color = (255, 255, 255, 160)  # soft white shadow, adds a bit of pop/depth
+    label_color = (15, 71, 92)
+    shadow_color = (255, 255, 255, 160)
     for text, (px, py), anchor in _AXIS_LABELS:
         draw.text((px + 1, py + 1), text, fill=shadow_color, anchor=anchor, font=font)
         draw.text((px, py), text, fill=label_color, anchor=anchor, font=font)
@@ -118,73 +143,67 @@ def _build_background_image() -> Image.Image:
     return img
 
 
-def _build_initial_circle_state() -> dict:
+def _build_marker_image(grid_x: float, grid_y: float) -> Image.Image:
     """
-    Fabric.js initial state: one circle centered on the canvas.
-    hasControls=False prevents resizing; only dragging is allowed.
-    originX/Y='center' means left/top directly represent the circle
-    center — no radius-offset math needed when reading back the position.
+    Draw the position marker circle onto a fresh copy of the
+    background, at the given 0-100 grid position converted to pixels.
+    A fresh copy each call - never mutates a cached background image.
     """
-    return {
-        "version": "4.4.0",
-        "objects": [
-            {
-                "type": "circle",
-                "left": CANVAS_SIZE / 2,
-                "top": CANVAS_SIZE / 2,
-                "radius": CIRCLE_RADIUS,
-                "fill": CIRCLE_FILL_COLOR,
-                "stroke": CIRCLE_STROKE_COLOR,
-                "strokeWidth": 2,
-                "originX": "center",
-                "originY": "center",
-                "selectable": True,
-                "hasControls": False,
-            }
-        ],
-    }
+    img = _build_background_image().convert("RGBA")
+    draw = ImageDraw.Draw(img, "RGBA")
+
+    px = (grid_x / 100.0) * CANVAS_SIZE
+    py = (grid_y / 100.0) * CANVAS_SIZE
+
+    draw.ellipse(
+        [px - CIRCLE_RADIUS, py - CIRCLE_RADIUS, px + CIRCLE_RADIUS, py + CIRCLE_RADIUS],
+        fill=_MARKER_FILL_COLOR,
+        outline=_MARKER_STROKE_COLOR,
+        width=2,
+    )
+    return img
 
 
-def render_mood_map() -> tuple[float, float] | None:
+def render_mood_map() -> tuple[float, float]:
     """
-    Render the labeled 2-axis mood map and return the circle's current
+    Render the labeled 2-axis mood map with a marker the user can
+    click or click-and-drag to reposition, and return the current
     position as (x, y) on the 0-100 grid.
 
-    Returns None on the very first render before the canvas has produced
-    any json_data — app.py treats None as 'no position chosen yet'.
+    Unlike the old canvas-based version, this never returns None -
+    the position is always initialized (dead center on first render)
+    and persisted in st.session_state, so callers don't need to
+    handle a "no position chosen yet" case. app.py's existing
+    `position or fallback` handling still works fine against this,
+    since a real tuple is always truthy.
     """
-    background_image = _build_background_image()
+    if _POSITION_STATE_KEY not in st.session_state:
+        st.session_state[_POSITION_STATE_KEY] = _DEFAULT_POSITION
 
-    canvas_result = st_canvas(
-        fill_color=CIRCLE_FILL_COLOR,
-        stroke_width=2,
-        stroke_color=CIRCLE_STROKE_COLOR,
-        background_image=background_image,
-        height=CANVAS_SIZE,
+    current_x, current_y = st.session_state[_POSITION_STATE_KEY]
+    marker_image = _build_marker_image(current_x, current_y)
+
+    result = streamlit_image_coordinates(
+        marker_image,
+        key=_WIDGET_KEY,
         width=CANVAS_SIZE,
-        drawing_mode="transform",
-        initial_drawing=_build_initial_circle_state(),
-        update_streamlit=True,
-        display_toolbar=False,
-        key=_CANVAS_KEY,
+        click_and_drag=True,
+        cursor="grab",
     )
 
-    if canvas_result.json_data is None:
-        return None
+    if result is not None:
+        rendered_width = result.get("width") or CANVAS_SIZE
+        rendered_height = result.get("height") or CANVAS_SIZE
+        # click_and_drag=True reports mouse-down as x1,y1 and mouse-up
+        # as x2,y2 - the release point is what should become the new
+        # position (matches "press, drag, release" intuition). Falls
+        # back to x1,y1 for a plain click with no real drag movement,
+        # in case the frontend ever omits x2,y2 for that case.
+        px = result.get("x2", result.get("x1"))
+        py = result.get("y2", result.get("y1"))
+        if px is not None and py is not None:
+            new_x = max(0.0, min(100.0, (px / rendered_width) * 100.0))
+            new_y = max(0.0, min(100.0, (py / rendered_height) * 100.0))
+            st.session_state[_POSITION_STATE_KEY] = (new_x, new_y)
 
-    objects = canvas_result.json_data.get("objects", [])
-    if not objects:
-        return None
-
-    circle = objects[0]
-    pixel_x = circle.get("left", CANVAS_SIZE / 2)
-    pixel_y = circle.get("top", CANVAS_SIZE / 2)
-
-    grid_x = (pixel_x / CANVAS_SIZE) * 100
-    grid_y = (pixel_y / CANVAS_SIZE) * 100
-
-    # Clamp to 0-100 in case of edge drags
-    grid_x = max(0.0, min(100.0, grid_x))
-    grid_y = max(0.0, min(100.0, grid_y))
-
-    return grid_x, grid_y
+    return st.session_state[_POSITION_STATE_KEY]
