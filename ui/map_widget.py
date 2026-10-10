@@ -34,6 +34,34 @@ as (x2, y2). Using the release point (x2, y2) as the new position
 gives the same practical feel as dragging a real shape - press
 anywhere, drag, release, the marker jumps there - just without a
 shape that visually follows the cursor mid-drag.
+
+WHY DRAGGING FELT LAGGY ("RUNNING" on every drag): every time this
+component reports a new coordinate, Streamlit's default behavior is
+to rerun the ENTIRE script top to bottom - not just this widget. That
+meant every drag re-ran the whole of app.py: rebuilding the genre
+panel, the header, the columns layout, and (worst offender) this
+module's background image from scratch, including re-reading a font
+file off disk via _load_font on every single rerun. None of that is
+needed just to move a marker. Two fixes, both below:
+
+  1. The static background (quadrant tints, crosshair lines, the 4
+     axis labels, the font load) is now built ONCE and cached with
+     st.cache_resource (_get_cached_background). Every subsequent
+     drag just pastes a small marker circle onto a copy of that
+     cached image - no redrawing, no font disk I/O.
+
+  2. The interactive widget itself now lives inside its own
+     st.experimental_fragment (_render_map_fragment). Streamlit
+     reruns only the fragment's own code when something inside it
+     changes - the rest of app.py (genre panel, header, buttons) is
+     left untouched. That's what actually removes the full-page
+     "RUNNING" round trip per drag; the cached image is just extra
+     headroom for the remaining fragment-only rerun.
+
+Position changes are still written to st.session_state from inside
+the fragment, so main() can read the latest value through
+render_mood_map()'s return value whenever it runs next (e.g. on the
+"Surprise me!" click), exactly as before.
 """
 
 import streamlit as st
@@ -78,6 +106,10 @@ def _load_font(size: int) -> ImageFont.ImageFont:
     (bold variants listed first). Falls back to PIL's built-in default
     if none are found, so the app always renders even on a minimal
     deployment image without these fonts installed.
+
+    Only ever called once now, from inside _get_cached_background -
+    see that function's docstring for why this used to be the single
+    biggest contributor to per-drag lag.
     """
     candidates = [
         # macOS - bold first
@@ -107,9 +139,11 @@ def _build_background_image() -> Image.Image:
       - Thin crosshair lines
       - 4 axis labels
     Does NOT include the marker circle - see _build_marker_image,
-    which draws that on top of a fresh copy of this every render, so
-    the marker always reflects the current position without needing
-    to regenerate the whole background from scratch each time.
+    which draws that on top of a fresh copy of the CACHED version of
+    this (_get_cached_background) every render, so the marker always
+    reflects the current position without needing to regenerate the
+    background - tints, lines, labels, font load and all - from
+    scratch on every drag.
     """
     img = Image.new("RGB", (CANVAS_SIZE, CANVAS_SIZE), color=(248, 248, 252))
     draw = ImageDraw.Draw(img, "RGBA")
@@ -143,13 +177,28 @@ def _build_background_image() -> Image.Image:
     return img
 
 
+@st.cache_resource
+def _get_cached_background() -> Image.Image:
+    """
+    Build the static background exactly once per server process (not
+    once per session, not once per rerun - st.cache_resource shares
+    this single Image object across every visitor, which is safe
+    because nothing ever mutates it directly; see _build_marker_image,
+    which always works on a .copy()).
+
+    This is what removes the font-disk-read + full redraw that used
+    to happen on every single drag event.
+    """
+    return _build_background_image()
+
+
 def _build_marker_image(grid_x: float, grid_y: float) -> Image.Image:
     """
-    Draw the position marker circle onto a fresh copy of the
+    Draw the position marker circle onto a COPY of the cached
     background, at the given 0-100 grid position converted to pixels.
-    A fresh copy each call - never mutates a cached background image.
+    Never mutates the cached background itself.
     """
-    img = _build_background_image().convert("RGBA")
+    img = _get_cached_background().copy().convert("RGBA")
     draw = ImageDraw.Draw(img, "RGBA")
 
     px = (grid_x / 100.0) * CANVAS_SIZE
@@ -164,22 +213,21 @@ def _build_marker_image(grid_x: float, grid_y: float) -> Image.Image:
     return img
 
 
-def render_mood_map() -> tuple[float, float]:
+@st.experimental_fragment
+def _render_map_fragment() -> None:
     """
-    Render the labeled 2-axis mood map with a marker the user can
-    click or click-and-drag to reposition, and return the current
-    position as (x, y) on the 0-100 grid.
+    The actual interactive widget, isolated in its own fragment.
 
-    Unlike the old canvas-based version, this never returns None -
-    the position is always initialized (dead center on first render)
-    and persisted in st.session_state, so callers don't need to
-    handle a "no position chosen yet" case. app.py's existing
-    `position or fallback` handling still works fine against this,
-    since a real tuple is always truthy.
+    Streamlit's fragment behavior: when a widget INSIDE a fragment
+    produces a new value, only the fragment's own function body is
+    re-executed - the rest of app.py (genre panel, header, "Surprise
+    me!" button, bubble grid) is left exactly as it was last drawn.
+    That's the actual fix for the laggy "RUNNING" feeling: a drag used
+    to mean "rerun everything", now it means "rerun this ~15-line
+    function". The new position is written straight to
+    st.session_state, which is all render_mood_map() needs to hand
+    the latest value back to the rest of the app on its next real run.
     """
-    if _POSITION_STATE_KEY not in st.session_state:
-        st.session_state[_POSITION_STATE_KEY] = _DEFAULT_POSITION
-
     current_x, current_y = st.session_state[_POSITION_STATE_KEY]
     marker_image = _build_marker_image(current_x, current_y)
 
@@ -204,6 +252,26 @@ def render_mood_map() -> tuple[float, float]:
         if px is not None and py is not None:
             new_x = max(0.0, min(100.0, (px / rendered_width) * 100.0))
             new_y = max(0.0, min(100.0, (py / rendered_height) * 100.0))
-            st.session_state[_POSITION_STATE_KEY] = (new_x, new_y)
+            new_position = (new_x, new_y)
+            if new_position != st.session_state[_POSITION_STATE_KEY]:
+                st.session_state[_POSITION_STATE_KEY] = new_position
+
+
+def render_mood_map() -> tuple[float, float]:
+    """
+    Render the labeled 2-axis mood map with a marker the user can
+    click or click-and-drag to reposition, and return the current
+    position as (x, y) on the 0-100 grid.
+
+    Never returns None - the position is always initialized (dead
+    center on first render) and persisted in st.session_state, so
+    callers don't need to handle a "no position chosen yet" case.
+    app.py's existing `position or fallback` handling still works
+    fine against this, since a real tuple is always truthy.
+    """
+    if _POSITION_STATE_KEY not in st.session_state:
+        st.session_state[_POSITION_STATE_KEY] = _DEFAULT_POSITION
+
+    _render_map_fragment()
 
     return st.session_state[_POSITION_STATE_KEY]
